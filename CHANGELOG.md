@@ -25,3 +25,67 @@
 ## v2.2
 
 - Previous packaged release.
+
+## v2.1 - Security increase
+
+- Increased handling of lock conditions, including very long tracks, non-responding or malformed tile servers, tile-server failures, and switching modes during tile downloads.
+- Added a recap window with track statistics, also invoked with the `I` key.
+
+## v2.0 - High-DPI Support & Precision Update
+
+- Added full High-DPI (Per-Monitor V2) support. The plugin now renders crisp text and lines at any Windows scaling factor, including 125%, 150%, and 175%+, without blurring or virtualization.
+- Fixed critical mouse misalignment / cursor drift. The red alignment circle now stays under the mouse cursor regardless of zoom level or screen scaling.
+- Fixed the Elevation Profile window appearing flattened or invisible on high-resolution screens by enforcing correct monitor-aware scaling.
+- Improved the Fit to Window algorithm, originally bound to the `X` key, with tighter margins and corrected vertical centering logic for a better track view.
+- Switched internal coordinate systems to floating-point precision to prevent sub-pixel rounding errors during panning and zooming.
+- Implemented dynamic linking for modern DPI APIs to ensure continued stability on older systems such as Windows 7.
+
+## v1.9 - Functions and fixes
+
+- Added Speed Profile support with the `V` key.
+- Added locale-independent parsing for speed data.
+- Added support for ISO 8601 time format used by GPX files.
+- Improved mouse interactions:
+  - smooth zoom on scroll wheel and touchpad;
+  - double-click on the map to zoom in;
+  - double-click on the profile to jump to the corresponding track location.
+- Added smart smoothing for speed data to reduce GPS noise.
+- Fixed elevation calculation so ascent and descent values are correct.
+- Added maximum and minimum elevation to the Elevation window.
+- Added time information to tooltips, showing when the track point was reached.
+- Improved tooltip colouring in Satellite Mode.
+
+## v1.8
+
+- Added slope-based track colouring.
+- Added configurable track stroke width.
+
+## v1.7
+
+- Added support for waypoints.
+
+## v1.6
+
+- Added mouse contextual menu.
+
+## v1.5
+
+- Added Satellite Mode toggle with the `T` key.
+- Added customisable `satelliteTileEndpoint` in `GPXLister.ini`.
+- Improved Google Maps tile support.
+- Added mouse hover on the track window.
+
+## v1.4
+
+- Added multi-track support.
+- Added resizable sidebar.
+- Added track name overlays.
+
+## v1.3
+
+- Added elevation profiles.
+- Added support for multiple track colours.
+
+## v1.0
+
+- Initial public release.
