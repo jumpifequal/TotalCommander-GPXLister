@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.3 - GPX viewing polish
+## v2.3 - GPX viewing polish and support for .fit files
 
 - Changed Fit to Window to the usual `F` shortcut and removed the old `X` compatibility shortcut.
 - Reworked the `I` information dialog with a cleaner DPI-aware card layout and translucent map-integrated presentation.
