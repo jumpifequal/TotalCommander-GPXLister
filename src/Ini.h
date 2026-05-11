@@ -26,8 +26,12 @@ struct Options {
     int backoffStartMs = 500;
     int backoffMaxMs = 4000;
     bool showElevationProfile = true;
-	bool showSlopeColouringOnTrack = false; // Progressive slope colouring for the map track polyline.
+    bool showSlopeColouringOnTrack = false; // Progressive slope colouring for the map track polyline.
     float trackLineWidth = 2.0f; // Stroke width for drawing the track polyline on the map.
+    wchar_t speedProfileColor[16] = L"#0059F2"; // Speed profile colour as #RRGGBB.
+    wchar_t fitConverter[MAX_PATH] = L"Fit2Gpx.exe";
+    wchar_t fitArgs[512] = L"";
+    int fitTimeoutSec = 60;
 };
 
 void LoadOptions(Options& o);

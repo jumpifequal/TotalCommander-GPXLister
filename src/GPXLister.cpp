@@ -3,12 +3,14 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wincodec.h>
+#include <commctrl.h>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <mutex> // Added for std::call_once (DPI Fix)
 #include <string>
+#include <shlwapi.h>
 
 #define TILE_READY_MSG (WM_APP+1)
 #define TIMER_DOWNLOAD 1 // Timer ID for download retries
@@ -16,7 +18,7 @@
 // Context menu command identifiers. Each constant is commented for traceability.
 #define ID_CTX_TOGGLE_TILES         40001 // Toggle tile rendering (keyboard: M)
 #define ID_CTX_TOGGLE_SERVER        40002 // Toggle tile server (keyboard: T)
-#define ID_CTX_FIT_TO_WINDOW        40003 // Fit selected/all tracks to window (keyboard: X)
+#define ID_CTX_FIT_TO_WINDOW        40003 // Fit selected/all tracks to window (keyboard: F)
 #define ID_CTX_TOGGLE_GRID          40004 // Toggle grid when tiles are disabled (keyboard: G)
 #define ID_CTX_TOGGLE_ELEVATION     40005 // Toggle elevation profile (keyboard: E)
 #define ID_CTX_TOGGLE_SLOPE_COLOUR  40006 // Toggle slope colouring on track (keyboard: S)
@@ -25,10 +27,13 @@
 
 #define ID_MAX_CYCLING_SPEED        150.0 // km/h - used for speed profile scaling
 
+static const double kElevationProfileSmoothingRadiusM = 125.0;
+
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "comctl32.lib")
 
 #include "listplug.h"
 #include "GPXParser.h"
@@ -250,6 +255,32 @@ static D2D1_COLOR_F GetTrackColor(size_t index) {
     return palette[index % (sizeof(palette) / sizeof(palette[0]))];
 }
 
+static int HexDigitValue(wchar_t ch) {
+    if (ch >= L'0' && ch <= L'9') return ch - L'0';
+    if (ch >= L'a' && ch <= L'f') return 10 + (ch - L'a');
+    if (ch >= L'A' && ch <= L'F') return 10 + (ch - L'A');
+    return -1;
+}
+
+static bool ParseHexColour(const wchar_t* text, D2D1_COLOR_F& out, float alpha) {
+    if (!text) return false;
+    const wchar_t* p = text;
+    while (*p == L' ' || *p == L'\t') p++;
+    if (*p == L'#') p++;
+
+    int v[6]{};
+    for (int i = 0; i < 6; ++i) {
+        v[i] = HexDigitValue(p[i]);
+        if (v[i] < 0) return false;
+    }
+
+    const int r = (v[0] << 4) | v[1];
+    const int g = (v[2] << 4) | v[3];
+    const int b = (v[4] << 4) | v[5];
+    out = D2D1::ColorF((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, alpha);
+    return true;
+}
+
 // Haversine distance between two points (in metres)
 static double GetDistance(const GpxPoint& p1, const GpxPoint& p2) {
     double dLat = (p2.lat - p1.lat) * PI / 180.0;
@@ -327,7 +358,22 @@ struct State {
     int selectedTrack = -1;       // -1 = All, 0..N = Index of selected track
     int sidebarWidth = 150;       // Current width of the sidebar
     bool resizingSidebar = false; // resize interaction state
+    std::wstring fileDisplayName; // GPX file stem used as a fallback display name
 };
+
+static int MinSidebarWidthPx(const State& s) {
+    return (std::max<int>)(50, (int)(90.0f * s.dpiScale + 0.5f));
+}
+
+static int MaxSidebarWidthPx(const State& s, int clientWidthPx) {
+    return (std::max<int>)(MinSidebarWidthPx(s), clientWidthPx / 2);
+}
+
+static D2D1_COLOR_F SpeedProfileColor(const State& s, float alpha = 0.85f) {
+    D2D1_COLOR_F colour = D2D1::ColorF(0.0f, 0.35f, 0.95f, alpha);
+    ParseHexColour(s.opt.speedProfileColor, colour, alpha);
+    return colour;
+}
 
 struct TrackInfoSummary {
     double distanceM = 0.0;
@@ -340,15 +386,297 @@ struct TrackInfoSummary {
     double maxSlopePct = 0.0;
     double longestAscentM = 0.0;
     double longestDescentM = 0.0;
+    double ascentM = 0.0;
+    double descentM = 0.0;
     double startTimeUnix = 0.0;
     double endTimeUnix = 0.0;
+    double elapsedSeconds = 0.0;
+    bool hasTimeGaps = false;
     size_t waypointCount = 0;
     size_t trackCount = 0;
+    bool hasSpeed = false;
+    bool hasSlope = false;
     
 };
 
+static bool IsProfileVisible(const State& s) {
+    return s.showElevationProfile || s.showSpeedProfile;
+}
+
+static float ProfileReservedHeight(const State& s) {
+    return IsProfileVisible(s) ? s.profileHeight : 0.0f;
+}
+
+static std::wstring GetPathStem(const wchar_t* path) {
+    if (!path || !*path) return L"";
+    std::wstring s(path);
+    const size_t slash = s.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) s.erase(0, slash + 1);
+    const size_t dot = s.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) s.erase(dot);
+    return s;
+}
+
+static bool FileExists(const std::wstring& path) {
+    DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static bool IsFitPath(const wchar_t* path) {
+    if (!path) return false;
+    const wchar_t* ext = PathFindExtensionW(path);
+    return ext && _wcsicmp(ext, L".fit") == 0;
+}
+
+static std::wstring QuoteArg(const std::wstring& s) {
+    std::wstring q = L"\"";
+    for (wchar_t ch : s) {
+        if (ch == L'"') q += L'\\';
+        q += ch;
+    }
+    q += L"\"";
+    return q;
+}
+
+static bool ReplaceAll(std::wstring& s, const wchar_t* from, const std::wstring& to) {
+    bool changed = false;
+    size_t pos = 0;
+    const size_t fromLen = wcslen(from);
+    while ((pos = s.find(from, pos)) != std::wstring::npos) {
+        s.replace(pos, fromLen, to);
+        pos += to.length();
+        changed = true;
+    }
+    return changed;
+}
+
+static std::wstring GetPluginDir() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(g_hInst, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    return path;
+}
+
+static std::wstring FindFitConverterInPath(const std::wstring& configured) {
+    DWORD need = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    if (need == 0) return L"";
+
+    std::wstring env(need, L'\0');
+    DWORD got = GetEnvironmentVariableW(L"PATH", &env[0], need);
+    if (got == 0 || got >= need) return L"";
+    env.resize(got);
+
+    size_t start = 0;
+    while (start <= env.size()) {
+        size_t end = env.find(L';', start);
+        std::wstring dir = env.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        if (!dir.empty() && !PathIsRelativeW(dir.c_str())) {
+            wchar_t candidate[MAX_PATH]{};
+            lstrcpynW(candidate, dir.c_str(), MAX_PATH);
+            PathAppendW(candidate, configured.c_str());
+            if (FileExists(candidate)) return candidate;
+        }
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+    return L"";
+}
+
+static std::wstring ResolveFitConverterPath(const Options& opt) {
+    std::wstring configured = opt.fitConverter;
+    if (configured.empty()) configured = L"Fit2Gpx.exe";
+
+    if (PathIsRelativeW(configured.c_str())) {
+        wchar_t pluginPath[MAX_PATH]{};
+        lstrcpynW(pluginPath, GetPluginDir().c_str(), MAX_PATH);
+        PathAppendW(pluginPath, configured.c_str());
+        if (FileExists(pluginPath)) return pluginPath;
+
+        return FindFitConverterInPath(configured);
+    }
+    return configured;
+}
+
+static std::wstring BuildTempGpxPath(const wchar_t* sourcePath, std::wstring& outTempDir) {
+    wchar_t tempDir[MAX_PATH]{};
+    DWORD len = GetTempPathW(MAX_PATH, tempDir);
+    if (len == 0 || len >= MAX_PATH) {
+        lstrcpynW(tempDir, L".\\", MAX_PATH);
+    }
+
+    std::wstring base = GetPathStem(sourcePath);
+    if (base.empty()) base = L"track";
+    if (base.length() > 80) base.resize(80);
+
+    const DWORD pid = GetCurrentProcessId();
+    GUID guid{};
+    for (int i = 0; i < 100; ++i) {
+        if (FAILED(CoCreateGuid(&guid))) break;
+
+        wchar_t guidText[64]{};
+        StringFromGUID2(guid, guidText, 64);
+        wchar_t dirName[MAX_PATH]{};
+        swprintf(dirName, MAX_PATH, L"gpxlister_%lu_%s", (unsigned long)pid, guidText);
+
+        wchar_t dirPath[MAX_PATH]{};
+        lstrcpynW(dirPath, tempDir, MAX_PATH);
+        PathAppendW(dirPath, dirName);
+        if (CreateDirectoryW(dirPath, nullptr)) {
+            wchar_t fileName[MAX_PATH]{};
+            swprintf(fileName, MAX_PATH, L"%s.gpx", base.c_str());
+            wchar_t candidate[MAX_PATH]{};
+            lstrcpynW(candidate, dirPath, MAX_PATH);
+            PathAppendW(candidate, fileName);
+            outTempDir = dirPath;
+            return candidate;
+        }
+    }
+
+    return L"";
+}
+
+static std::wstring BuildFitCommandLine(const std::wstring& converter, const wchar_t* fitPath, const std::wstring& outGpxPath, const Options& opt) {
+    std::wstring tmpl = opt.fitArgs;
+    if (tmpl.empty()) {
+        return QuoteArg(converter) + L" " + QuoteArg(fitPath) + L" " + QuoteArg(outGpxPath);
+    }
+
+    bool hasTemplate = false;
+    hasTemplate |= ReplaceAll(tmpl, L"{converter}", QuoteArg(converter));
+    hasTemplate |= ReplaceAll(tmpl, L"{input}", QuoteArg(fitPath));
+    hasTemplate |= ReplaceAll(tmpl, L"{output}", QuoteArg(outGpxPath));
+
+    if (hasTemplate) {
+        if (tmpl.find(converter) != std::wstring::npos || tmpl.find(L"{converter}") != std::wstring::npos) {
+            return tmpl;
+        }
+        return QuoteArg(converter) + L" " + tmpl;
+    }
+
+    return QuoteArg(converter) + L" " + QuoteArg(fitPath) + L" " + QuoteArg(outGpxPath) + L" " + tmpl;
+}
+
+static void ShowFitError(HWND parent, const std::wstring& text) {
+    MessageBoxW(parent, text.c_str(), L"GPXLister FIT conversion error", MB_OK | MB_ICONERROR);
+}
+
+static bool ConvertFitToGpx(HWND parent, const wchar_t* fitPath, const Options& opt, std::wstring& outGpxPath, std::wstring& outTempDir) {
+    outGpxPath = BuildTempGpxPath(fitPath, outTempDir);
+    if (outGpxPath.empty()) {
+        ShowFitError(parent, L"Unable to create a temporary directory for FIT conversion.");
+        return false;
+    }
+
+    std::wstring converter = ResolveFitConverterPath(opt);
+    if (converter.empty() || !FileExists(converter)) {
+        ShowFitError(parent, L"Unable to find FIT converter. Check fitConverter in GPXLister.ini.");
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    std::wstring cmd = BuildFitCommandLine(converter, fitPath, outGpxPath, opt);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(L'\0');
+
+    if (!CreateProcessW(converter.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        wchar_t msg[1024]{};
+        swprintf(msg, 1024, L"Unable to start FIT converter:\n%s\n\nWin32 error: %lu", converter.c_str(), (unsigned long)GetLastError());
+        ShowFitError(parent, msg);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    DWORD waitMs = (DWORD)opt.fitTimeoutSec * 1000;
+    DWORD wait = WaitForSingleObject(pi.hProcess, waitMs);
+    if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        ShowFitError(parent, L"FIT conversion timed out.");
+        return false;
+    }
+
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (wait != WAIT_OBJECT_0 || exitCode != 0 || !FileExists(outGpxPath)) {
+        wchar_t msg[1024]{};
+        swprintf(msg, 1024, L"FIT conversion failed.\n\nConverter exit code: %lu", (unsigned long)exitCode);
+        ShowFitError(parent, msg);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    return true;
+}
+
+struct TempGpxFile {
+    std::wstring path;
+    std::wstring dir;
+    ~TempGpxFile() {
+        if (!path.empty()) {
+            DeleteFileW(path.c_str());
+        }
+        if (!dir.empty()) {
+            RemoveDirectoryW(dir.c_str());
+        }
+    }
+};
+
+static std::wstring TrackDisplayName(const State& s, int index) {
+    if (index >= 0 && index < (int)s.tracks.size()) {
+        const auto& t = s.tracks[index];
+        if (!t.name.empty()) return t.name;
+        if (s.tracks.size() == 1 && !s.fileDisplayName.empty()) return s.fileDisplayName;
+        return L"Track " + std::to_wstring(index + 1);
+    }
+    if (s.tracks.size() == 1) {
+        return TrackDisplayName(s, 0);
+    }
+    return L"All tracks";
+}
+
 // forward declarations for summary dialog
 static void BuildElevationMedian3(const Track& t, std::vector<double>& out);
+static bool InterpolateElevationAtDistance(const std::vector<double>& cumDistM, const std::vector<double>& eleM, double targetDistM, double& outEleM);
+static void BuildDistanceMovingAverage(const std::vector<double>& cumDistM, const std::vector<double>& in, double radiusM, std::vector<double>& out);
+
+static double PercentileNearest(std::vector<double>& values, double percentile) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    if (percentile <= 0.0) {
+        return values.front();
+    }
+    if (percentile >= 1.0) {
+        return values.back();
+    }
+    const size_t idx = (size_t)((double)(values.size() - 1) * percentile);
+    return values[idx];
+}
 
 static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
     out = TrackInfoSummary{};
@@ -367,6 +695,8 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
     
     double speedSum = 0.0;
     size_t speedCount = 0;
+    std::vector<double> speedSamples;
+    double elapsedSecondsSum = 0.0;
     
     double minEle = 1e18;
     double maxEle = -1e18;
@@ -376,6 +706,7 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
     
     double minSlope = 1e18;
     double maxSlope = -1e18;
+    std::vector<double> slopeSamples;
     
     double longestAsc = 0.0;
     double longestDesc = 0.0;
@@ -395,11 +726,9 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
         if (t.pts.empty()) {
             continue;           
         }
-        
+
         for (size_t i = 0; i < t.pts.size(); ++i) {
             const GpxPoint & p = t.pts[i];
-            if (p.ele < minEle) minEle = p.ele;
-            if (p.ele > maxEle) maxEle = p.ele;
             anyPoint = true;
             
             if (p.time > 0.0) {
@@ -409,33 +738,62 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
                 }
                  if (globalEnd == 0.0 || p.time > globalEnd) {
                     globalEnd = p.time;                    
-                }             
+                }
             }           
         }
         
         out.distanceM += t.stats.distance;
+        out.ascentM += t.stats.ascent;
+        out.descentM += t.stats.descent;
         
         for (size_t i = 0; i < t.speed.size(); ++i) {
             const double spd = t.speed[i];
-            if (spd > 0.0) {
+            if (std::isfinite(spd) && spd > 0.0) {
                 anySpeed = true;
                 if (spd < minSpeed) minSpeed = spd;
                 if (spd > maxSpeed) maxSpeed = spd;
                 speedSum += spd;
-                speedCount++;             
+                speedCount++;
+                if (spd > 0.5 && spd <= ID_MAX_CYCLING_SPEED) {
+                    speedSamples.push_back(spd);
+                }
             }        
         }
+
+        for (size_t i = 1; i < t.pts.size(); ++i) {
+            const double tPrev = t.pts[i - 1].time;
+            const double tCurr = t.pts[i].time;
+            const double dt = tCurr - tPrev;
+            if (!(tPrev > 0.0 && tCurr > 0.0 && dt > 0.0)) {
+                continue;
+            }
+            const double d = (i < t.cumDist.size()) ? (t.cumDist[i] - t.cumDist[i - 1]) : GetDistance(t.pts[i - 1], t.pts[i]);
+            if (!(d >= 0.0)) {
+                continue;
+            }
+            const double speedKmh = (dt > 0.0) ? (d / dt * 3.6) : 0.0;
+            const bool plausibleMovingSegment = (dt <= 600.0) || (d > 50.0 && speedKmh <= ID_MAX_CYCLING_SPEED);
+            if (plausibleMovingSegment) {
+                elapsedSecondsSum += dt;
+            }
+            else if (dt > 600.0) {
+                out.hasTimeGaps = true;
+            }
+        }
         
-        std::vector<double> smoothEle;
-        BuildElevationMedian3(t, smoothEle);
-        if (smoothEle.size() == t.pts.size() && t.pts.size() >= 2) {
+        std::vector<double> medianEle;
+        BuildElevationMedian3(t, medianEle);
+        if (medianEle.size() == t.pts.size() && t.pts.size() >= 2) {
             double curAscM = 0.0;
             double curDescM = 0.0;
             
-            // compute grade over a distance window to avoid jitter spikes.
-            const double kSlopeWindowM = 25.0;        // window length for grade calculation
+            // Compute summary grade over a sustained distance window. Short point-to-point
+            // GPX elevation samples are noisy enough to produce unrealistic "maximum slope"
+            // values even on normal live Garmin recordings.
+            const double kSlopeWindowM = 500.0;
             const double kMinRunSegmentM = 5.0;       // for ascent/descent run accumulation
             const double kSlopeEpsilonPct = 0.1;      // ignore near-flat noise
+            const double kMaxPlausibleSlopePct = 60.0;
 
             std::vector<double> cumDistM;
             cumDistM.resize(t.pts.size());
@@ -446,7 +804,15 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
                 cumDistM[i] = cumDistM[i - 1] + ((d > 0.0) ? d : 0.0);
             }
 
-            size_t j = 0;
+            std::vector<double> smoothEle;
+            BuildDistanceMovingAverage(cumDistM, medianEle, kElevationProfileSmoothingRadiusM, smoothEle);
+
+            for (double ele : smoothEle) {
+                if (std::isfinite(ele)) {
+                    if (ele < minEle) minEle = ele;
+                    if (ele > maxEle) maxEle = ele;
+                }
+            }
 
             for (size_t i = 1; i < t.pts.size(); ++i) {
                 const double segDistM = GetDistance(t.pts[i - 1], t.pts[i]);
@@ -454,36 +820,32 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
                     continue;
                 }
 
-                // Move j forward to keep a window of ~kSlopeWindowM behind i.
-                while ((j + 1) < i) {
-                    const double d0 = cumDistM[i] - cumDistM[j];
-                    const double d1 = cumDistM[i] - cumDistM[j + 1];
-                    if (d1 >= kSlopeWindowM) {
-                        j++;
-                        continue;
-                    }
-                    break;
+                const double currentDistM = cumDistM[i];
+                const double startDistM = currentDistM - kSlopeWindowM;
+                if (!(startDistM >= 0.0)) {
+                    continue;
                 }
 
-                const double winDistM = cumDistM[i] - cumDistM[j];
-                if (!(winDistM >= kSlopeWindowM)) {
+                double startEleM = 0.0;
+                if (!InterpolateElevationAtDistance(cumDistM, smoothEle, startDistM, startEleM) || !std::isfinite(smoothEle[i])) {
                     continue;
                 }
                 
                 // some GPX files omit <ele>. My xparser defaults to 0 which creates huge negative grades.
                 // Filter suspect windows when the track is clearly not a sea-level track.
                 const bool trackNotSeaLevel = (maxEle > 50.0);
-                const bool endpointEleIsZero = (t.pts[i].ele == 0.0) || (t.pts[j].ele == 0.0);
+                const bool endpointEleIsZero = (t.pts[i].ele == 0.0) || (startEleM == 0.0);
                 if (trackNotSeaLevel && endpointEleIsZero) {
                     continue;                    
                 }
 
-                const double winEleDiffM = smoothEle[i] - smoothEle[j];
-                const double slopePct = (winEleDiffM / winDistM) * 100.0;
+                const double winEleDiffM = smoothEle[i] - startEleM;
+                const double slopePct = (winEleDiffM / kSlopeWindowM) * 100.0;
+                if (!std::isfinite(slopePct) || std::abs(slopePct) > kMaxPlausibleSlopePct) {
+                    continue;
+                }
 
-                anySlope = true;
-                if (slopePct < minSlope) minSlope = slopePct;
-                if (slopePct > maxSlope) maxSlope = slopePct;
+                slopeSamples.push_back(slopePct);
 
                 // Use the window grade sign to stabilise ascent/descent runs too.
                 if (segDistM >= kMinRunSegmentM) {
@@ -509,24 +871,264 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
     if (!anyPoint || out.trackCount == 0) {
         return false;    
     }
+
+    if (!slopeSamples.empty()) {
+        anySlope = true;
+        minSlope = PercentileNearest(slopeSamples, 0.02);
+        maxSlope = PercentileNearest(slopeSamples, 0.98);
+    }
     
     out.minEleM = (minEle < 1e17) ? minEle : 0.0;
     out.maxEleM = (maxEle > -1e17) ? maxEle : 0.0;
     out.startTimeUnix = globalStart;
     out.endTimeUnix = globalEnd;
+    out.elapsedSeconds = elapsedSecondsSum;
     
         if (anySpeed && speedCount > 0) {
-            out.minSpeedKmh = (minSpeed < 1e17) ? minSpeed : 0.0;
-            out.maxSpeedKmh = (maxSpeed > -1e17) ? maxSpeed : 0.0;
-            out.avgSpeedKmh = speedSum / (double)speedCount;      
+            if (!speedSamples.empty()) {
+                out.minSpeedKmh = PercentileNearest(speedSamples, 0.02);
+                out.maxSpeedKmh = PercentileNearest(speedSamples, 0.985) * 1.25;
+            }
+            else {
+                out.minSpeedKmh = (minSpeed < 1e17) ? minSpeed : 0.0;
+                out.maxSpeedKmh = (maxSpeed > -1e17) ? maxSpeed : 0.0;
+            }
+            if (out.maxSpeedKmh > ID_MAX_CYCLING_SPEED) out.maxSpeedKmh = ID_MAX_CYCLING_SPEED;
+            out.avgSpeedKmh = (elapsedSecondsSum > 0.0) ? (out.distanceM / elapsedSecondsSum * 3.6) : (speedSum / (double)speedCount);
+            out.hasSpeed = true;
         }    
         if (anySlope) {
             out.minSlopePct = (minSlope < 1e17) ? minSlope : 0.0;
             out.maxSlopePct = (maxSlope > -1e17) ? maxSlope : 0.0;
             out.longestAscentM = longestAsc;
-            out.longestDescentM = longestDesc;        
+            out.longestDescentM = longestDesc;
+            out.hasSlope = true;
         }    
         return true;
+}
+
+static bool ShowSummaryTaskDialog(HWND owner, const std::wstring& title, const std::wstring& heading, const std::wstring& content) {
+    HMODULE comctl = LoadLibraryW(L"comctl32.dll");
+    if (!comctl) return false;
+
+    using TaskDialogIndirectFn = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+    auto taskDialogIndirect = (TaskDialogIndirectFn)GetProcAddress(comctl, "TaskDialogIndirect");
+    if (!taskDialogIndirect) {
+        FreeLibrary(comctl);
+        return false;
+    }
+
+    TASKDIALOGCONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = owner;
+    cfg.dwFlags = TDF_SIZE_TO_CONTENT;
+    cfg.dwCommonButtons = TDCBF_OK_BUTTON;
+    cfg.pszWindowTitle = title.c_str();
+    cfg.pszMainInstruction = heading.c_str();
+    cfg.pszContent = content.c_str();
+    cfg.pszMainIcon = TD_INFORMATION_ICON;
+
+    const HRESULT hr = taskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
+    FreeLibrary(comctl);
+    return SUCCEEDED(hr);
+}
+
+struct SummaryDialogModel {
+    std::wstring title;
+    std::wstring subtitle;
+    std::wstring distance;
+    std::wstring elapsed;
+    std::wstring avgSpeed;
+    std::wstring maxSpeed;
+    std::wstring elevation;
+    std::wstring gainLoss;
+    std::wstring slope;
+    std::wstring tracks;
+    std::wstring waypoints;
+    std::wstring start;
+    std::wstring end;
+};
+
+static int ScaleDialogValue(HWND hwnd, int value) {
+    const UINT dpi = GetWindowDpiSafe(hwnd);
+    return MulDiv(value, (int)dpi, 96);
+}
+
+static RECT ScaleDialogRect(HWND hwnd, int left, int top, int right, int bottom) {
+    RECT rc = {
+        ScaleDialogValue(hwnd, left),
+        ScaleDialogValue(hwnd, top),
+        ScaleDialogValue(hwnd, right),
+        ScaleDialogValue(hwnd, bottom)
+    };
+    return rc;
+}
+
+static void DrawGdiText(HDC hdc, HFONT font, COLORREF color, const std::wstring& text, RECT rc, UINT flags) {
+    HGDIOBJ oldFont = SelectObject(hdc, font);
+    SetTextColor(hdc, color);
+    SetBkMode(hdc, TRANSPARENT);
+    DrawTextW(hdc, text.c_str(), (int)text.size(), &rc, flags);
+    SelectObject(hdc, oldFont);
+}
+
+static void FillRoundRect(HDC hdc, const RECT& rc, COLORREF fill, COLORREF border) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ oldBrush = SelectObject(hdc, brush);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    const int radius = (std::max<int>)(6, (rc.bottom - rc.top) / 7);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+static void DrawSummaryStat(HDC hdc, HFONT labelFont, HFONT valueFont, const wchar_t* label, const std::wstring& value, RECT rc) {
+    FillRoundRect(hdc, rc, RGB(255, 255, 255), RGB(226, 226, 222));
+    const int pad = (std::max<int>)(8, (rc.right - rc.left) / 12);
+    const int labelH = (rc.bottom - rc.top) / 3;
+    RECT labelRc = { rc.left + pad, rc.top + labelH / 2, rc.right - pad, rc.top + labelH + labelH / 2 };
+    RECT valueRc = { rc.left + pad, rc.top + labelH + labelH / 2, rc.right - pad, rc.bottom - labelH / 3 };
+    DrawGdiText(hdc, labelFont, RGB(105, 101, 94), label, labelRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawGdiText(hdc, valueFont, RGB(28, 28, 26), value, valueRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+static void DrawSummarySection(HDC hdc, HFONT labelFont, HFONT valueFont, const wchar_t* title, const std::wstring& line1, const std::wstring& line2, RECT rc) {
+    FillRoundRect(hdc, rc, RGB(252, 252, 249), RGB(226, 226, 222));
+    const int pad = (std::max<int>)(10, (rc.right - rc.left) / 16);
+    const int h = rc.bottom - rc.top;
+    RECT titleRc = { rc.left + pad, rc.top + h / 10, rc.right - pad, rc.top + h / 3 };
+    RECT line1Rc = { rc.left + pad, rc.top + h * 4 / 10, rc.right - pad, rc.top + h * 65 / 100 };
+    RECT line2Rc = { rc.left + pad, rc.top + h * 7 / 10, rc.right - pad, rc.bottom - h / 10 };
+    DrawGdiText(hdc, labelFont, RGB(105, 101, 94), title, titleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawGdiText(hdc, valueFont, RGB(28, 28, 26), line1, line1Rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawGdiText(hdc, valueFont, RGB(28, 28, 26), line2, line2Rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+static LRESULT CALLBACK SummaryDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    SummaryDialogModel* model = reinterpret_cast<SummaryDialogModel*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    switch (msg) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        return TRUE;
+    }
+    case WM_CREATE:
+    {
+        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            ScaleDialogValue(hwnd, 616), ScaleDialogValue(hwnd, 408),
+            ScaleDialogValue(hwnd, 88), ScaleDialogValue(hwnd, 30),
+            hwnd, (HMENU)IDOK, g_hInst, nullptr);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE || wParam == VK_RETURN) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+
+        HBRUSH bg = CreateSolidBrush(RGB(246, 245, 240));
+        FillRect(hdc, &client, bg);
+        DeleteObject(bg);
+
+        HFONT titleFont = CreateFontW(-ScaleDialogValue(hwnd, 24), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HFONT subtitleFont = CreateFontW(-ScaleDialogValue(hwnd, 13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HFONT labelFont = CreateFontW(-ScaleDialogValue(hwnd, 12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HFONT valueFont = CreateFontW(-ScaleDialogValue(hwnd, 18), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HFONT smallValueFont = CreateFontW(-ScaleDialogValue(hwnd, 15), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+        if (model) {
+            RECT titleRc = ScaleDialogRect(hwnd, 28, 20, 690, 52);
+            RECT subtitleRc = ScaleDialogRect(hwnd, 28, 53, 690, 74);
+            DrawGdiText(hdc, titleFont, RGB(22, 22, 20), model->title, titleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+            DrawGdiText(hdc, subtitleFont, RGB(105, 101, 94), model->subtitle, subtitleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+            DrawSummaryStat(hdc, labelFont, valueFont, L"Distance", model->distance, ScaleDialogRect(hwnd, 28, 90, 188, 154));
+            DrawSummaryStat(hdc, labelFont, valueFont, L"Elapsed", model->elapsed, ScaleDialogRect(hwnd, 200, 90, 360, 154));
+            DrawSummaryStat(hdc, labelFont, valueFont, L"Avg speed", model->avgSpeed, ScaleDialogRect(hwnd, 372, 90, 532, 154));
+            DrawSummaryStat(hdc, labelFont, valueFont, L"Max speed", model->maxSpeed, ScaleDialogRect(hwnd, 544, 90, 704, 154));
+
+            DrawSummarySection(hdc, labelFont, smallValueFont, L"Elevation", model->elevation, model->gainLoss, ScaleDialogRect(hwnd, 28, 174, 354, 264));
+            DrawSummarySection(hdc, labelFont, smallValueFont, L"Sustained slope", model->slope, L"500 m robust range", ScaleDialogRect(hwnd, 378, 174, 704, 264));
+            DrawSummarySection(hdc, labelFont, smallValueFont, L"Contents", model->tracks, model->waypoints, ScaleDialogRect(hwnd, 28, 284, 354, 374));
+            DrawSummarySection(hdc, labelFont, smallValueFont, L"Time", model->start, model->end, ScaleDialogRect(hwnd, 378, 284, 704, 374));
+        }
+
+        DeleteObject(smallValueFont);
+        DeleteObject(valueFont);
+        DeleteObject(labelFont);
+        DeleteObject(subtitleFont);
+        DeleteObject(titleFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static bool ShowSummaryDialogWindow(HWND owner, SummaryDialogModel& model) {
+    const wchar_t* className = L"GPXListerSummaryDialog";
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = SummaryDialogWndProc;
+        wc.hInstance = g_hInst;
+        wc.lpszClassName = className;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return false;
+        }
+        registered = true;
+    }
+
+    RECT ownerRc{};
+    GetWindowRect(owner, &ownerRc);
+    const UINT ownerDpi = GetWindowDpiSafe(owner);
+    const int width = MulDiv(735, (int)ownerDpi, 96);
+    const int height = MulDiv(485, (int)ownerDpi, 96);
+    const int x = ownerRc.left + ((ownerRc.right - ownerRc.left) - width) / 2;
+    const int y = ownerRc.top + ((ownerRc.bottom - ownerRc.top) - height) / 2;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, className, L"Track summary",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, width, height, owner, nullptr, g_hInst, &model);
+    if (!hwnd) {
+        return false;
+    }
+
+    EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    MSG msg{};
+    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+    return true;
 }
 
 static void ShowTrackInfoDialog(State & s) {
@@ -537,40 +1139,47 @@ static void ShowTrackInfoDialog(State & s) {
     }
     
     const bool allTracks = (s.selectedTrack < 0);
+    std::wstring selectionName = TrackDisplayName(s, allTracks ? -1 : s.selectedTrack);
     std::wstring title = L"Track summary";
-    if (!allTracks && s.selectedTrack >= 0 && s.selectedTrack < (int)s.tracks.size()) {
-        if (!s.tracks[s.selectedTrack].name.empty()) {
-            title = L"Track summary. " + s.tracks[s.selectedTrack].name;        
-        }        
+    if (!selectionName.empty()) {
+        title += L" - " + selectionName;
     }
     
     const double distKm = sum.distanceM / 1000.0;
     const std::wstring startStr = FormatTimestampLocal(sum.startTimeUnix);
     const std::wstring endStr = FormatTimestampLocal(sum.endTimeUnix);
-    const std::wstring durStr = (sum.startTimeUnix > 0.0 && sum.endTimeUnix > 0.0 && sum.endTimeUnix >= sum.startTimeUnix)
-        ? FormatDurationHhMmSs(sum.endTimeUnix - sum.startTimeUnix)
+    const std::wstring durStr = (sum.elapsedSeconds > 0.0)
+        ? FormatDurationHhMmSs(sum.elapsedSeconds)
         : L"";
     
     wchar_t line0[128];
     if (allTracks) {
-        swprintf(line0, 128, L"Selection: All tracks (%zu)", sum.trackCount);        
+        if (s.tracks.size() == 1) {
+            swprintf(line0, 128, L"Single track");
+        }
+        else {
+            swprintf(line0, 128, L"All tracks (%zu)", sum.trackCount);
+        }
     }
     else {
-        swprintf(line0, 128, L"Selection: Track %d", s.selectedTrack + 1);        
+        swprintf(line0, 128, L"Selected track");
     }
     
     wchar_t line1[128];
-    swprintf(line1, 128, L"Length: %.2f km", distKm);
+    swprintf(line1, 128, L"%.2f km", distKm);
     
     wchar_t line2[128];
-    swprintf(line2, 128, L"Elevation: min %.0f m. max %.0f m", sum.minEleM, sum.maxEleM);
+    swprintf(line2, 128, L"Min %.0f m   Max %.0f m", sum.minEleM, sum.maxEleM);
     
-    wchar_t line3[160];
-    if (sum.maxSpeedKmh > 0.0) {
-        swprintf(line3, 160, L"Speed (km/h): min %.1f. avg %.1f. max %.1f", sum.minSpeedKmh, sum.avgSpeedKmh, sum.maxSpeedKmh);        
+    wchar_t avgSpeedLine[64];
+    wchar_t maxSpeedLine[64];
+    if (sum.hasSpeed) {
+        swprintf(avgSpeedLine, 64, L"%.1f km/h", sum.avgSpeedKmh);
+        swprintf(maxSpeedLine, 64, L"%.1f km/h", sum.maxSpeedKmh);
     }
     else {
-        swprintf(line3, 160, L"Speed (km/h): not available");        
+        swprintf(avgSpeedLine, 64, L"N/A");
+        swprintf(maxSpeedLine, 64, L"N/A");
     }
     
     wchar_t line4[256];
@@ -590,40 +1199,45 @@ static void ShowTrackInfoDialog(State & s) {
     swprintf(line5, 128, L"Waypoints: %zu", sum.waypointCount);
     
     wchar_t line6[192];
-    if (sum.longestAscentM > 0.0 || sum.longestDescentM > 0.0 || sum.maxSlopePct != 0.0 || sum.minSlopePct != 0.0) {
-        swprintf(line6, 192, L"Slope: min %.1f%%. max %.1f%%", sum.minSlopePct, sum.maxSlopePct);        
+    if (sum.hasSlope) {
+        swprintf(line6, 192, L"Down %.1f%%   Up %.1f%%", sum.minSlopePct, sum.maxSlopePct);
     }
     else {
-        swprintf(line6, 192, L"Slope: not available");
+        swprintf(line6, 192, L"N/A");
     }
     
     wchar_t line7[128];
-    swprintf(line7, 128, L"Longest ascent: %.2f km", sum.longestAscentM / 1000.0);
+    swprintf(line7, 128, L"Gain +%.0f m   Loss -%.0f m", sum.ascentM, sum.descentM);
     
-    wchar_t line8[128];
-    swprintf(line8, 128, L"Longest descent: %.2f km", sum.longestDescentM / 1000.0);
-    
-    std::wstring text;
-    text.reserve(1024);
-    text += line0;
-    text += L"\r\n";
-    text += line1;
-    text += L"\r\n";
-    text += line2;
-    text += L"\r\n";
-    text += line3;
-    text += L"\r\n";
-    text += line4;
-    text += L"\r\n";
-    text += line5;
-    text += L"\r\n";
-    text += line6;
-    text += L"\r\n";
-    text += line7;
-    text += L"\r\n";
-    text += line8;
-    
-    MessageBoxW(s.hwnd, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
+    wchar_t trackLine[128];
+    swprintf(trackLine, 128, L"Tracks: %zu", sum.trackCount);
+
+    SummaryDialogModel model;
+    model.title = selectionName.empty() ? L"Track summary" : selectionName;
+    model.subtitle = sum.hasTimeGaps ? (std::wstring(line0) + L" - stitched timing") : line0;
+    model.distance = line1;
+    model.elapsed = durStr.empty() ? L"N/A" : durStr;
+    model.avgSpeed = avgSpeedLine;
+    model.maxSpeed = maxSpeedLine;
+    model.elevation = line2;
+    model.gainLoss = line7;
+    model.slope = line6;
+    model.tracks = trackLine;
+    model.waypoints = line5;
+    model.start = startStr.empty() ? L"Start: N/A" : (L"Start: " + startStr);
+    if (sum.hasTimeGaps) {
+        model.end = L"Elapsed excludes large gaps";
+    }
+    else {
+        model.end = endStr.empty() ? L"End: N/A" : (L"End: " + endStr);
+    }
+
+    if (!ShowSummaryDialogWindow(s.hwnd, model)) {
+        std::wstring text = model.title + L"\r\n\r\n" + model.distance + L"\r\n" + model.elapsed + L"\r\n" +
+            model.avgSpeed + L"\r\n" + model.maxSpeed + L"\r\n" + model.elevation + L"\r\n" +
+            model.gainLoss + L"\r\n" + model.slope;
+        MessageBoxW(s.hwnd, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -644,6 +1258,43 @@ static double MedianOf3(double a, double b, double c) {
     return b;
 }
 
+static bool InterpolateElevationAtDistance(const std::vector<double>& cumDistM, const std::vector<double>& eleM, double targetDistM, double& outEleM) {
+    if (cumDistM.empty() || cumDistM.size() != eleM.size()) {
+        return false;
+    }
+    if (targetDistM <= cumDistM.front()) {
+        outEleM = eleM.front();
+        return std::isfinite(outEleM);
+    }
+    if (targetDistM >= cumDistM.back()) {
+        outEleM = eleM.back();
+        return std::isfinite(outEleM);
+    }
+
+    auto it = std::lower_bound(cumDistM.begin(), cumDistM.end(), targetDistM);
+    if (it == cumDistM.end()) {
+        return false;
+    }
+    const size_t hi = (size_t)(it - cumDistM.begin());
+    if (hi == 0) {
+        outEleM = eleM[0];
+        return std::isfinite(outEleM);
+    }
+
+    const size_t lo = hi - 1;
+    const double d0 = cumDistM[lo];
+    const double d1 = cumDistM[hi];
+    const double e0 = eleM[lo];
+    const double e1 = eleM[hi];
+    if (!std::isfinite(d0) || !std::isfinite(d1) || !std::isfinite(e0) || !std::isfinite(e1) || !(d1 > d0)) {
+        return false;
+    }
+
+    const double t = (targetDistM - d0) / (d1 - d0);
+    outEleM = e0 + (e1 - e0) * t;
+    return std::isfinite(outEleM);
+}
+
 static void BuildElevationMedian3(const Track& t, std::vector<double>& out) {
     out.clear();
     out.reserve(t.pts.size());
@@ -661,6 +1312,56 @@ static void BuildElevationMedian3(const Track& t, std::vector<double>& out) {
     }
 }
 
+static void BuildMedian3Series(const std::vector<double>& in, std::vector<double>& out) {
+    out.clear();
+    out.reserve(in.size());
+
+    if (in.empty()) {
+        return;
+    }
+    const size_t n = in.size();
+    for (size_t i = 0; i < n; ++i) {
+        const double prev = (i > 0) ? in[i - 1] : in[i];
+        const double curr = in[i];
+        const double next = (i + 1 < n) ? in[i + 1] : in[i];
+        out.push_back(MedianOf3(prev, curr, next));
+    }
+}
+
+static void BuildDistanceMovingAverage(const std::vector<double>& cumDistM, const std::vector<double>& in, double radiusM, std::vector<double>& out) {
+    out.clear();
+    out.resize(in.size(), 0.0);
+
+    if (in.empty() || cumDistM.size() != in.size() || !(radiusM > 0.0)) {
+        out = in;
+        return;
+    }
+
+    size_t left = 0;
+    size_t right = 0;
+    double sum = 0.0;
+    size_t count = 0;
+
+    for (size_t i = 0; i < in.size(); ++i) {
+        const double center = cumDistM[i];
+        while (right < in.size() && cumDistM[right] <= center + radiusM) {
+            if (std::isfinite(in[right])) {
+                sum += in[right];
+                count++;
+            }
+            right++;
+        }
+        while (left < right && cumDistM[left] < center - radiusM) {
+            if (std::isfinite(in[left])) {
+                sum -= in[left];
+                count--;
+            }
+            left++;
+        }
+        out[i] = (count > 0) ? (sum / (double)count) : in[i];
+    }
+}
+
 static void ComputeBounds(State& s) {
     bool init = false;
     s.totalDist = 0; s.totalAsc = 0; s.totalDesc = 0;
@@ -672,10 +1373,6 @@ static void ComputeBounds(State& s) {
         t.cumDist.clear(); t.cumDist.push_back(0);
         t.speed.clear();   t.speed.push_back(0.0);
         t.stats = { 0, 0, 0 };
-
-        // Smoothed elevation series used for ascent/descent.
-        std::vector<double> smoothEle;
-        BuildElevationMedian3(t, smoothEle);
 
         // 1. Calculate Raw Speed
         for (size_t i = 0; i < t.pts.size(); ++i) {
@@ -690,23 +1387,11 @@ static void ComputeBounds(State& s) {
 
             if (i > 0) {
                 double d = GetDistance(t.pts[i - 1], p);
-                double eleDiff = p.ele - t.pts[i - 1].ele;
                 const double tPrev = t.pts[i - 1].time;
                 const double tCurr = p.time;
                 double tDiff = tCurr - tPrev;
 
                 t.stats.distance += d;
-
-                // Use median-smoothed elevation to reduce noise without undercounting.
-                if (smoothEle.size() == t.pts.size()) {
-                    eleDiff = smoothEle[i] - smoothEle[i - 1];
-                }
-                if (eleDiff > 0.0) {
-                    t.stats.ascent += eleDiff;
-                }
-                else if (eleDiff < 0.0) {
-                    t.stats.descent += -eleDiff;
-                }
 
                 t.cumDist.push_back(t.stats.distance);
 
@@ -746,6 +1431,22 @@ static void ComputeBounds(State& s) {
             t.speed = smooth;
         }
 
+        std::vector<double> medianEle;
+        std::vector<double> smoothEle;
+        BuildElevationMedian3(t, medianEle);
+        BuildDistanceMovingAverage(t.cumDist, medianEle, kElevationProfileSmoothingRadiusM, smoothEle);
+        if (smoothEle.size() == t.pts.size()) {
+            for (size_t i = 1; i < smoothEle.size(); ++i) {
+                const double eleDiff = smoothEle[i] - smoothEle[i - 1];
+                if (eleDiff > 0.0) {
+                    t.stats.ascent += eleDiff;
+                }
+                else if (eleDiff < 0.0) {
+                    t.stats.descent += -eleDiff;
+                }
+            }
+        }
+
         s.totalDist += t.stats.distance;
         s.totalAsc += t.stats.ascent;
         s.totalDesc += t.stats.descent;
@@ -764,7 +1465,7 @@ static void ComputeBounds(State& s) {
 
 // Updated to use D2D1_POINT_2F for float precision with high-DPI logic
 static bool IsPointInElevationProfile(const State& s, const D2D1_POINT_2F& dipPt) {
-    if (!s.showElevationProfile) return false;
+    if (!IsProfileVisible(s)) return false;
 
     RECT rc;
     GetClientRect(s.hwnd, &rc);
@@ -792,7 +1493,7 @@ static void FitToWindow(State& s) {
     float dipSidebarW = (s.tracks.size() > 1) ? ((float)s.sidebarWidth / s.dpiScale) : 0.0f;
 
     float mapW = dipW_all - dipSidebarW;
-    float mapH = dipH_all - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipH_all - ProfileReservedHeight(s);
 
     if (mapW <= 0 || mapH <= 0) return;
 
@@ -882,6 +1583,8 @@ static void EnsureRT(State& s) {
     }
 }
 
+static void FillTextBackdrop(const State& s, D2D1_RECT_F rect);
+
 // draws the openstreetmap attribution text
 static void DrawAttribution(const State& s) {
     if (!s.rt || !s.tf) return;
@@ -890,15 +1593,11 @@ static void DrawAttribution(const State& s) {
     RECT rc; GetClientRect(s.hwnd, &rc);
     float dipBottom = (float)rc.bottom / s.dpiScale;
     float dipRight = (float)rc.right / s.dpiScale;
-    float offset = (s.tracks.size() > 1) ? (float)s.sidebarWidth : 0.0f;
+    float offset = (s.tracks.size() > 1) ? ((float)s.sidebarWidth / s.dpiScale) : 0.0f;
     D2D1_RECT_F r = D2D1::RectF(offset + 8.f, dipBottom - 24.f, dipRight - 8.f, dipBottom - 6.f);
 
-    D2D1_POINT_2F dipMouse = { (float)s.mousePos.x / s.dpiScale, (float)s.mousePos.y / s.dpiScale };
-    if (s.isSatelliteMode && !IsPointInElevationProfile(s, dipMouse))
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-    else
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black, 0.6f));
-
+    FillTextBackdrop(s, r);
+    s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black, 0.72f));
     s.rt->DrawTextW(text.c_str(), (UINT32)text.size(), s.tf, r, s.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
@@ -919,11 +1618,23 @@ static void DrawScale(const State& s) {
     std::wstring label = (dx >= 1000) ? std::to_wstring((int)(dx / 1000)) + L" km" : std::to_wstring((int)dx) + L" m";
 
     // Draw line
-    s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
     float y = dipBottom - 40.f;
+    D2D1_RECT_F backR = D2D1::RectF(dipOffset + 14.f, y - 8.f, dipOffset + 224.f, y + 28.f);
+    FillTextBackdrop(s, backR);
+    s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
     s.rt->DrawLine(D2D1::Point2F(dipOffset + 20.f, y), D2D1::Point2F(dipOffset + 20.f + (float)px, y), s.brush, 2.f);
     D2D1_RECT_F r = D2D1::RectF(dipOffset + 24.f, y + 4.f, dipOffset + 220.f, y + 24.f);
     s.rt->DrawTextW(label.c_str(), (UINT32)label.size(), s.tf, r, s.brush);
+}
+
+static void FillTextBackdrop(const State& s, D2D1_RECT_F rect) {
+    if (!s.rt || !s.brush) return;
+    rect.left -= 4.0f;
+    rect.top -= 2.0f;
+    rect.right += 4.0f;
+    rect.bottom += 2.0f;
+    s.brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.72f));
+    s.rt->FillRectangle(rect, s.brush);
 }
 
 // DrawCoords updated to display the selected track name
@@ -939,11 +1650,12 @@ static void DrawCoords(const State& s, POINT pt) {
 
     float mapW = dipRight - dipOffset;
     // Vertical center must account for the elevation profile height
-    float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipBottom - ProfileReservedHeight(s);
     float centerY = mapH / 2.0f;
 
     double x = s.cx - mapW / 2 + (dipMouseX - dipOffset);
-    double y = s.cy - centerY + pt.y;
+    float dipMouseY = (float)pt.y / s.dpiScale;
+    double y = s.cy - centerY + dipMouseY;
     double lon = x2lon(x, s.zoom), lat = y2lat(y, s.zoom);
 
     /*
@@ -961,17 +1673,13 @@ static void DrawCoords(const State& s, POINT pt) {
         swprintf(buf, 256, L"%s | lat %.6f lon %.6f", name.c_str(), lat, lon);
     }
     else {
-        swprintf(buf, 256, L"All Tracks | lat %.6f lon %.6f", lat, lon);
+        const std::wstring name = TrackDisplayName(s, -1);
+        swprintf(buf, 256, L"%s | lat %.6f lon %.6f", name.c_str(), lat, lon);
     }
 
-    // Convert physical mouse pos to DIP for the check
-    D2D1_POINT_2F dipMouse = { (float)s.mousePos.x / s.dpiScale, (float)s.mousePos.y / s.dpiScale };
-    if (s.isSatelliteMode && !IsPointInElevationProfile(s, dipMouse))
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-    else
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-
     D2D1_RECT_F r = D2D1::RectF(dipOffset + 8.f, 8.f, dipOffset + 600.f, 28.f);
+    FillTextBackdrop(s, r);
+    s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
     s.rt->DrawTextW(buf, (UINT32)wcslen(buf), s.tf, r, s.brush);
 }
 
@@ -1003,7 +1711,7 @@ static void DrawTiles(const State& s) {
 
     // Calculate map height and vertical centre to match DrawTrack logic
     // This prevents misalignment when the elevation profile is visible
-    float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipBottom - ProfileReservedHeight(s);
     float centerY = mapH / 2.0f;
 
     // Determine visible tile range
@@ -1085,7 +1793,7 @@ static void DrawTrack(const State& s) {
     float dipRight = (float)rc.right / s.dpiScale;
     float dipOffset = (s.tracks.size() > 1) ? ((float)s.sidebarWidth / s.dpiScale) : 0.0f;
     float mapWidth = dipRight - dipOffset;
-    float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipBottom - ProfileReservedHeight(s);
     float centerY = mapH / 2.0f;
 
     for (size_t tIdx = 0; tIdx < s.tracks.size(); ++tIdx) {
@@ -1167,7 +1875,7 @@ static void DrawTrack(const State& s) {
 // Elevation Rendering Function. Complete segmented multi-colour Elevation Profile with Gap Prevention.
 static void DrawElevationProfile(State& s) {
     // Safety check: ensure we have a valid render target and data
-    if (!s.showElevationProfile || !s.rt || !s.tf || s.tracks.empty()) return;
+    if (!IsProfileVisible(s) || !s.rt || !s.tf || s.tracks.empty()) return;
 
     RECT rc; GetClientRect(s.hwnd, &rc);
     float dipBottom = (float)rc.bottom / s.dpiScale;
@@ -1184,24 +1892,46 @@ static void DrawElevationProfile(State& s) {
     s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::DarkSlateGray));
     s.rt->DrawRectangle(panelRect, s.brush, 0.5f);
 
-    // 2. Determine Local Elevation Scale and Distances based on selection
-    double minE = 1e6, maxE = -1e6, plotTotalDist = 0, plotTotalAsc = 0, plotTotalDesc = 0;
+    // 2. Determine local display scales and distances based on selection.
+    // Profile curves use smoothed samples so short GPS/elevation noise does not dominate the drawing.
+    std::vector<std::vector<double>> profileEle(s.tracks.size());
+    std::vector<std::vector<double>> profileSpeed(s.tracks.size());
+    double minE = 1e6, maxE = -1e6, rawMinE = 1e6, rawMaxE = -1e6;
+    double plotTotalDist = 0, plotTotalAsc = 0, plotTotalDesc = 0;
     for (size_t i = 0; i < s.tracks.size(); ++i) {
         if (s.selectedTrack != -1 && s.selectedTrack != (int)i) continue;
         const auto& t = s.tracks[i];
         plotTotalDist += t.stats.distance;
         plotTotalAsc += t.stats.ascent;
         plotTotalDesc += t.stats.descent;
+        std::vector<double> medianEle;
+        BuildElevationMedian3(t, medianEle);
+        BuildDistanceMovingAverage(t.cumDist, medianEle, kElevationProfileSmoothingRadiusM, profileEle[i]);
+        BuildMedian3Series(t.speed, profileSpeed[i]);
         for (const auto& p : t.pts) {
-            minE = (std::min<double>)(minE, p.ele);
-            maxE = (std::max<double>)(maxE, p.ele);
+            if (std::isfinite(p.ele)) {
+                rawMinE = (std::min<double>)(rawMinE, p.ele);
+                rawMaxE = (std::max<double>)(rawMaxE, p.ele);
+            }
         }
+        for (double e : profileEle[i]) {
+            if (std::isfinite(e)) {
+                minE = (std::min<double>)(minE, e);
+                maxE = (std::max<double>)(maxE, e);
+            }
+        }
+    }
+    if (plotTotalDist <= 0) return;
+    const bool hasElevationScale = (minE < 1e5 && maxE > -1e5);
+    if (!hasElevationScale) {
+        minE = 0.0;
+        maxE = 1.0;
     }
 
     // Preserve the true track extrema for the statistics overlay.
     // The rendering scale may be adjusted for perfectly flat tracks, but the displayed max/min should remain accurate.
-    double displayMinE = minE;
-    double displayMaxE = maxE;
+    double displayMinE = (rawMinE < 1e5) ? rawMinE : minE;
+    double displayMaxE = (rawMaxE > -1e5) ? rawMaxE : maxE;
 
     // Include waypoint elevations in displayed extrema when present.
     // Waypoints are part of the GPX snapshot and may contain a lower/higher elevation than sampled track points.
@@ -1215,7 +1945,6 @@ static void DrawElevationProfile(State& s) {
 
     // Prevent division by zero if the track is perfectly flat
     if (maxE <= minE) maxE = minE + 1.0;
-    if (plotTotalDist <= 0) return;
 
     // Layout constants
     float leftPadding = 50.0f; // Space for Y-axis labels
@@ -1224,19 +1953,21 @@ static void DrawElevationProfile(State& s) {
     float plotH = height - (margin * 3.0f);
 
     // 3. Draw Y-Axis Ticks and Horizontal Grid Lines
-    for (int i = 0; i < 4; ++i) {
-        double eleVal = minE + (maxE - minE) * (double)i / 3.0;
-        float yp = panelRect.bottom - margin - (float)((eleVal - minE) / (maxE - minE) * plotH);
+    if (s.showElevationProfile && hasElevationScale) {
+        for (int i = 0; i < 4; ++i) {
+            double eleVal = minE + (maxE - minE) * (double)i / 3.0;
+            float yp = panelRect.bottom - margin - (float)((eleVal - minE) / (maxE - minE) * plotH);
 
-        // Draw light gray grid line
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black, 0.1f));
-        s.rt->DrawLine(D2D1::Point2F(dipOffset + leftPadding, yp), D2D1::Point2F(dipOffset + leftPadding + plotW, yp), s.brush, 0.5f);
+            // Draw light gray grid line
+            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black, 0.1f));
+            s.rt->DrawLine(D2D1::Point2F(dipOffset + leftPadding, yp), D2D1::Point2F(dipOffset + leftPadding + plotW, yp), s.brush, 0.5f);
 
-        // Render elevation text (e.g., "450m")
-        wchar_t valBuf[32]; swprintf(valBuf, 32, L"%.0fm", eleVal);
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::DimGray));
-        D2D1_RECT_F textRect = D2D1::RectF(dipOffset + 5.0f, yp - 7.0f, dipOffset + leftPadding - 5.0f, yp + 7.0f);
-        s.rt->DrawTextW(valBuf, (UINT32)wcslen(valBuf), s.tf, textRect, s.brush);
+            // Render elevation text (e.g., "450m")
+            wchar_t valBuf[32]; swprintf(valBuf, 32, L"%.0fm", eleVal);
+            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::DimGray));
+            D2D1_RECT_F textRect = D2D1::RectF(dipOffset + 5.0f, yp - 7.0f, dipOffset + leftPadding - 5.0f, yp + 7.0f);
+            s.rt->DrawTextW(valBuf, (UINT32)wcslen(valBuf), s.tf, textRect, s.brush);
+        }
     }
 
     // 3b. Draw Right-Axis (Speed) Ticks
@@ -1249,16 +1980,17 @@ static void DrawElevationProfile(State& s) {
 
         for (size_t i = 0; i < s.tracks.size(); ++i) {
             if (s.selectedTrack != -1 && s.selectedTrack != (int)i) continue;
-            for (double v : s.tracks[i].speed) {
+            const auto& speeds = profileSpeed[i];
+            for (double v : speeds) {
                 if (v > 0.5) samples.push_back(v); // Ignore stops
             }
         }
 
         if (!samples.empty()) {
             std::sort(samples.begin(), samples.end());
-            size_t idx = (size_t)(samples.size() * 0.98); // 98th percentile
+            size_t idx = (size_t)(samples.size() * 0.985); // robust high speed with headroom
             if (idx >= samples.size()) idx = samples.size() - 1;
-            maxSpeed = samples[idx] * 1.1; // Add 10% headroom
+            maxSpeed = samples[idx] * 1.25; // Add headroom while ignoring isolated GPS spikes
         }
 
         // Floor: Walking is ~5km/h. Don't zoom in closer than 0-5.
@@ -1270,7 +2002,7 @@ static void DrawElevationProfile(State& s) {
             double spdVal = maxSpeed * (double)i / 4.0;
             float yp = panelRect.bottom - margin - (float)(spdVal / maxSpeed * plotH);
 
-            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Magenta, 0.8f));
+            s.brush->SetColor(SpeedProfileColor(s, 0.85f));
             s.rt->DrawLine(D2D1::Point2F(rightAxisX, yp), D2D1::Point2F(rightAxisX + 5.0f, yp), s.brush, 1.0f);
             wchar_t buf[32]; swprintf(buf, 32, L"%.0f", spdVal);
 
@@ -1283,34 +2015,47 @@ static void DrawElevationProfile(State& s) {
     }
 
     // 4. Render Track Segments with Slope-Based Colouring
-    double distAcc = 0;
-    for (size_t tIdx = 0; tIdx < s.tracks.size(); ++tIdx) {
-        if (s.selectedTrack != -1 && s.selectedTrack != (int)tIdx) continue;
-        const auto& t = s.tracks[tIdx];
-        for (size_t i = 1; i < t.pts.size(); ++i) {
-            // Formula: Offset + LeftPadding + (RelativeDist / TotalDist) * PlotWidth
-            float x1 = dipOffset + leftPadding + (float)((distAcc + t.cumDist[i - 1]) / plotTotalDist * plotW);
-            float x2 = dipOffset + leftPadding + (float)((distAcc + t.cumDist[i]) / plotTotalDist * plotW);
-            float y1 = panelRect.bottom - margin - (float)((t.pts[i - 1].ele - minE) / (maxE - minE) * plotH);
-            float y2 = panelRect.bottom - margin - (float)((t.pts[i].ele - minE) / (maxE - minE) * plotH);
+    if (s.showElevationProfile && hasElevationScale) {
+        double distAcc = 0;
+        for (size_t tIdx = 0; tIdx < s.tracks.size(); ++tIdx) {
+            if (s.selectedTrack != -1 && s.selectedTrack != (int)tIdx) continue;
+            const auto& t = s.tracks[tIdx];
+            const auto& ele = profileEle[tIdx];
+            if (ele.size() != t.pts.size()) { distAcc += t.stats.distance; continue; }
+            for (size_t i = 1; i < t.pts.size(); ++i) {
+                if (!std::isfinite(ele[i - 1]) || !std::isfinite(ele[i])) continue;
+                // Formula: Offset + LeftPadding + (RelativeDist / TotalDist) * PlotWidth
+                float x1 = dipOffset + leftPadding + (float)((distAcc + t.cumDist[i - 1]) / plotTotalDist * plotW);
+                float x2 = dipOffset + leftPadding + (float)((distAcc + t.cumDist[i]) / plotTotalDist * plotW);
+                float y1 = panelRect.bottom - margin - (float)((ele[i - 1] - minE) / (maxE - minE) * plotH);
+                float y2 = panelRect.bottom - margin - (float)((ele[i] - minE) / (maxE - minE) * plotH);
 
-            // Slope analysis logic
-            double segmentDist = t.cumDist[i] - t.cumDist[i - 1];
-            double grade = (segmentDist > 1e-3) ? (t.pts[i].ele - t.pts[i - 1].ele) / segmentDist * 100.0 : 0.0;
+                double grade = 0.0;
+                const double currentDistM = (i < t.cumDist.size()) ? t.cumDist[i] : 0.0;
+                const double startDistM = currentDistM - 100.0;
+                double startEleM = 0.0;
+                if (startDistM >= 0.0 && InterpolateElevationAtDistance(t.cumDist, ele, startDistM, startEleM)) {
+                    grade = (ele[i] - startEleM) / 100.0 * 100.0;
+                }
+                else {
+                    const double segmentDist = t.cumDist[i] - t.cumDist[i - 1];
+                    grade = (segmentDist > 1e-3) ? (ele[i] - ele[i - 1]) / segmentDist * 100.0 : 0.0;
+                }
 
-            if (grade > 8.0) s.brush->SetColor(D2D1::ColorF(0.8f, 0.0f, 0.0f));
-            else if (grade > 2.0) s.brush->SetColor(D2D1::ColorF(0.9f, 0.6f, 0.0f));
-            else if (grade < -2.0) s.brush->SetColor(D2D1::ColorF(0.0f, 0.4f, 0.8f));
-            else s.brush->SetColor(D2D1::ColorF(0.0f, 0.7f, 0.0f));
+                if (grade > 8.0) s.brush->SetColor(D2D1::ColorF(0.8f, 0.0f, 0.0f));
+                else if (grade > 2.0) s.brush->SetColor(D2D1::ColorF(0.9f, 0.6f, 0.0f));
+                else if (grade < -2.0) s.brush->SetColor(D2D1::ColorF(0.0f, 0.4f, 0.8f));
+                else s.brush->SetColor(D2D1::ColorF(0.0f, 0.7f, 0.0f));
 
-            s.rt->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), s.brush, 2.0f);
+                s.rt->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), s.brush, 2.0f);
+            }
+            distAcc += t.stats.distance;
         }
-        distAcc += t.stats.distance;
     }
 
     // 4b. Draw Speed Polyline (with Clipping)
     if (s.showSpeedProfile && maxSpeed > 0) {
-        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Magenta, 0.6f));
+        s.brush->SetColor(SpeedProfileColor(s, 0.85f));
         // Clip spikes that exceed maxSpeed
         s.rt->PushAxisAlignedClip(
             D2D1::RectF(dipOffset, panelRect.top + margin, dipRight, panelRect.bottom - margin),
@@ -1321,6 +2066,7 @@ static void DrawElevationProfile(State& s) {
         for (size_t tIdx = 0; tIdx < s.tracks.size(); ++tIdx) {
             if (s.selectedTrack != -1 && s.selectedTrack != (int)tIdx) continue;
             const auto& t = s.tracks[tIdx];
+            const auto& speeds = profileSpeed[tIdx];
 
             if (t.pts.size() < 2) { distAcc += t.stats.distance; continue; }
 
@@ -1332,8 +2078,8 @@ static void DrawElevationProfile(State& s) {
             bool started = false;
             for (size_t i = 0; i < t.pts.size(); ++i) {
                 float x = dipOffset + leftPadding + (float)((distAcc + t.cumDist[i]) / plotTotalDist * plotW);
-                // Clamp Y to maxSpeed so line doesn't go off canvas
-                double val = (std::min<double>)(t.speed[i], maxSpeed);
+                double val = (i < speeds.size() && std::isfinite(speeds[i])) ? speeds[i] : 0.0;
+                val = std::clamp(val, 0.0, maxSpeed);
                 float y = panelRect.bottom - margin - (float)(val / maxSpeed * plotH);
 
                 if (!started) {
@@ -1356,8 +2102,13 @@ static void DrawElevationProfile(State& s) {
 
     // 5. Render Statistics Overlay
     wchar_t statsBuf[512];
-    swprintf(statsBuf, 512, L"Dist: %.2f km | Ascent: +%.0f m | Descent: -%.0f m | Maximum: %.0f m | Minimum: %.0f m",
-        plotTotalDist / 1000.0, plotTotalAsc, plotTotalDesc, displayMaxE, displayMinE);
+    if (s.showElevationProfile && hasElevationScale) {
+        swprintf(statsBuf, 512, L"Dist: %.2f km | Ascent: +%.0f m | Descent: -%.0f m | Maximum: %.0f m | Minimum: %.0f m",
+            plotTotalDist / 1000.0, plotTotalAsc, plotTotalDesc, displayMaxE, displayMinE);
+    }
+    else {
+        swprintf(statsBuf, 512, L"Dist: %.2f km | Speed profile", plotTotalDist / 1000.0);
+    }
     s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
     D2D1_RECT_F textR = D2D1::RectF(panelRect.left + leftPadding, panelRect.top + 4.0f, panelRect.right, panelRect.top + 24.0f);
     s.rt->DrawTextW(statsBuf, (UINT32)wcslen(statsBuf), s.tf, textR, s.brush);
@@ -1372,7 +2123,7 @@ static void DrawWaypoints(const State& s) {
     float dipRight = (float)rc.right / s.dpiScale;
     float dipOffset = (s.tracks.size() > 1) ? ((float)s.sidebarWidth / s.dpiScale) : 0.0f;
     float mapWidth = dipRight - dipOffset;
-    float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipBottom - ProfileReservedHeight(s);
     float centerY = mapH / 2.0f;
 
     for (const auto& w : s.waypoints) {
@@ -1439,7 +2190,7 @@ static void OnPaint(State& s) {
     const GpxWaypoint* hw = nullptr; // Pointer for hovered waypoint
 
     float mapW = dipRight - dipOffset;
-    float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+    float mapH = dipBottom - ProfileReservedHeight(s);
     float centerY = mapH / 2.0f;
 
     // 1. Check if the mouse is hovering over a Waypoint (Priority over tracks)
@@ -1533,20 +2284,12 @@ static void OnPaint(State& s) {
         }
 
         // Adjust tooltip height for the extra line
-        float rectHeight = timeStr.empty() ? 25.0f : 45.0f;
-        D2D1_RECT_F tipR = D2D1::RectF((float)dipMouse.x + 15.0f, (float)dipMouse.y - rectHeight, (float)dipMouse.x + 250.0f, (float)dipMouse.y);
+        float rectHeight = timeStr.empty() ? 42.0f : 64.0f;
+        D2D1_RECT_F tipR = D2D1::RectF((float)dipMouse.x + 15.0f, (float)dipMouse.y - rectHeight, (float)dipMouse.x + 280.0f, (float)dipMouse.y + 4.0f);
 
         // Draw white background for text for readability
-        s.brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.8f));
-        s.rt->FillRectangle(tipR, s.brush);
-
-        // Adaptive tooltip text colour based on map mode
-        if (s.isSatelliteMode && !IsPointInElevationProfile(s, dipMouse)) {
-            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-        }
-        else {
-            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-        }
+        FillTextBackdrop(s, tipR);
+        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
         s.rt->DrawTextW(tip.c_str(), (UINT32)tip.size(), s.tf, tipR, s.brush);
     }
     else if (hp) {
@@ -1557,10 +2300,8 @@ static void OnPaint(State& s) {
         s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Red));
         s.rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mx, my), 6.0f, 6.0f), s.brush, 2.0f);
 
-        // Elevation profile vertical line should be shown when the mouse is over the track on the map.
-        // This is opt-in via the existing elevation toggle. Default behaviour remains unchanged when the
-        // elevation profile is disabled.
-        if (s.showElevationProfile && !IsPointInElevationProfile(s, dipMouse)) {
+        // Profile vertical line should be shown when the mouse is over the track on the map.
+        if (IsProfileVisible(s) && !IsPointInElevationProfile(s, dipMouse)) {
             float leftPadding = 50.0f, margin = 10.0f;
             float plotW = mapW - (leftPadding + margin);
             
@@ -1627,16 +2368,12 @@ static void OnPaint(State& s) {
         }
 
         // Adjust tooltip rectangle height based on the presence of the time string.
-        float rectHeight = timeStr.empty() ? 25.0f : 45.0f;
-        float rectWidth = timeStr.empty() ? 100.0f : 180.0f;
+        float rectHeight = timeStr.empty() ? 42.0f : 64.0f;
+        float rectWidth = timeStr.empty() ? 120.0f : 220.0f;
 
-        D2D1_RECT_F tipR = D2D1::RectF((float)dipMouse.x + 15.0f, (float)dipMouse.y - rectHeight, (float)dipMouse.x + rectWidth, (float)dipMouse.y);
-        if (s.isSatelliteMode && !IsPointInElevationProfile(s, dipMouse)) {
-            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::White));
-        }
-        else {
-            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-        }
+        D2D1_RECT_F tipR = D2D1::RectF((float)dipMouse.x + 15.0f, (float)dipMouse.y - rectHeight, (float)dipMouse.x + rectWidth, (float)dipMouse.y + 4.0f);
+        FillTextBackdrop(s, tipR);
+        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
 
         s.rt->DrawTextW(hoverBuf, (UINT32)wcslen(hoverBuf), s.tf, tipR, s.brush);
     }
@@ -1649,7 +2386,7 @@ static void OnSize(State& s, int w, int h) {
     // Layout logic for the Sidebar
     if (s.tracks.size() > 1) {
         // Ensure sidebarWidth remains within sensible bounds during resizing
-        s.sidebarWidth = (std::max<int>)(50, (std::min<int>)(s.sidebarWidth, w / 2));
+        s.sidebarWidth = std::clamp(s.sidebarWidth, MinSidebarWidthPx(s), MaxSidebarWidthPx(s, w));
 
         if (!s.hwndList) {
             s.hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
@@ -1681,14 +2418,14 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     switch (msg) {
     case WM_LBUTTONDOWN: {
-        if (s.tracks.size() > 1 && std::abs(dipMouse.x - (float)s.sidebarWidth / s.dpiScale) < 7) {
+        if (s.tracks.size() > 1 && std::abs(mouse.x - s.sidebarWidth) < (int)(7.0f * s.dpiScale + 0.5f)) {
             SetFocus(s.hwnd); // Ensure we have focus
             s.resizingSidebar = true;
             SetCapture(s.hwnd);
             break;
         }
 
-        if (dipMouse.x < (float)s.sidebarWidth / s.dpiScale) break;
+        if (dipMouse.x < dipOffset) break;
 
         // 2. Map Panning Initiation
         SetFocus(s.hwnd);
@@ -1704,7 +2441,7 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
         s.hoverPointIdx = -1;
 
         if (s.resizingSidebar) {
-            s.sidebarWidth = (std::max<int>)(50, (std::min<int>)((int)dipMouse.x, (int)(rc.right / 2)));
+            s.sidebarWidth = std::clamp((int)mouse.x, MinSidebarWidthPx(s), MaxSidebarWidthPx(s, rc.right));
             OnSize(s, rc.right, rc.bottom);
             InvalidateRect(s.hwnd, NULL, FALSE);
             break;
@@ -1748,9 +2485,9 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
         }
-        else if (dipMouse.x >= (float)s.sidebarWidth / s.dpiScale) {
+        else if (dipMouse.x >= dipOffset) {
             float minSafeDist = 15.0f; // Threshold in pixels
-            float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+            float mapH = dipBottom - ProfileReservedHeight(s);
             float centerY = mapH / 2.0f;
             float halfMapW = dipMapW / 2.0f;
 
@@ -1807,7 +2544,9 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEWHEEL: {
         auto _mouse = POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (!ScreenToClient(s.hwnd, &_mouse)) break;
-        if ((float)_mouse.x / s.dpiScale < dipOffset) break;
+        D2D1_POINT_2F dipWheelMouse = { (float)_mouse.x / s.dpiScale, (float)_mouse.y / s.dpiScale };
+        s.mousePos = _mouse;
+        if (dipWheelMouse.x < dipOffset) break;
 
         // Smoother/Slower zooming logic
         // Accumulate delta to handle high-precision touchpads/mice and slow down zoom
@@ -1826,11 +2565,11 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (nz == s.zoom) break;
 
         // Fixed projection for Zoom-at-Mouse-Point using DIPs
-        float mapH = dipBottom - (s.showElevationProfile ? s.profileHeight : 0);
+        float mapH = dipBottom - ProfileReservedHeight(s);
         float centerY = mapH / 2.0f;
 
-        const double beforeX = s.cx - (double)dipMapW * 0.5 + (double)(dipMouse.x - dipOffset);
-        const double beforeY = s.cy - (double)centerY + (double)dipMouse.y;
+        const double beforeX = s.cx - (double)dipMapW * 0.5 + (double)(dipWheelMouse.x - dipOffset);
+        const double beforeY = s.cy - (double)centerY + (double)dipWheelMouse.y;
 
         const double lon = x2lon(beforeX, s.zoom);
         const double lat = y2lat(beforeY, s.zoom);
@@ -1866,13 +2605,20 @@ static void OnKey(State& s, WPARAM vk) {
         }
         InvalidateRect(s.hwnd, NULL, FALSE);
     }
-    if (vk == 'E') { // Toggle Elevation Profile
+    if (vk == 'F' || vk == 'f') { // Fit to Window
+        FitToWindow(s);
+        InvalidateRect(s.hwnd, NULL, FALSE);
+        return;
+    }
+    if (vk == 'E' || vk == 'e' || vk == 'A' || vk == 'a') { // Toggle Elevation Profile
         s.showElevationProfile = !s.showElevationProfile;
         InvalidateRect(s.hwnd, NULL, FALSE);
+        return;
     }
     if (vk == 'V' || vk == 'v') { // Toggle Speed Profile
         s.showSpeedProfile = !s.showSpeedProfile;
         InvalidateRect(s.hwnd, NULL, FALSE);
+        return;
     }
 
     if (vk == 'S' || vk == 's') { // Toggle slope colouring
@@ -1887,8 +2633,16 @@ static void OnKey(State& s, WPARAM vk) {
         s.showGridWhenNoTiles = !s.showGridWhenNoTiles;
         InvalidateRect(s.hwnd, NULL, FALSE);
     }
-    else if (vk == VK_OEM_PLUS || vk == VK_ADD) { SendMessageW(s.hwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0); }
-    else if (vk == VK_OEM_MINUS || vk == VK_SUBTRACT) { SendMessageW(s.hwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0); }
+    else if (vk == VK_OEM_PLUS || vk == VK_ADD) {
+        POINT pt = s.mousePos;
+        ClientToScreen(s.hwnd, &pt);
+        SendMessageW(s.hwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM((SHORT)pt.x, (SHORT)pt.y));
+    }
+    else if (vk == VK_OEM_MINUS || vk == VK_SUBTRACT) {
+        POINT pt = s.mousePos;
+        ClientToScreen(s.hwnd, &pt);
+        SendMessageW(s.hwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), MAKELPARAM((SHORT)pt.x, (SHORT)pt.y));
+    }
     else if (vk == VK_LEFT) { s.cx -= 50; InvalidateRect(s.hwnd, NULL, FALSE); }
     else if (vk == VK_RIGHT) { s.cx += 50; InvalidateRect(s.hwnd, NULL, FALSE); }
     else if (vk == VK_UP) { s.cy -= 50; InvalidateRect(s.hwnd, NULL, FALSE); }
@@ -1943,8 +2697,8 @@ static bool GetMapViewClientRect(const State& s, RECT& outRc) {
     outRc.right = rcClient.right;
     outRc.bottom = rcClient.bottom;
 
-    if (s.showElevationProfile) {
-        outRc.bottom -= (LONG)s.profileHeight;
+    if (IsProfileVisible(s)) {
+        outRc.bottom -= (LONG)(s.profileHeight * s.dpiScale);
     }
 
     if (outRc.left < 0) {
@@ -1987,7 +2741,7 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     }
     AppendMenuW(hMenu, serverFlags, ID_CTX_TOGGLE_SERVER, L"Toggle tile server (T)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, ID_CTX_FIT_TO_WINDOW, L"Fit to window (X)");
+    AppendMenuW(hMenu, MF_STRING, ID_CTX_FIT_TO_WINDOW, L"Fit to window (F)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
     UINT gridFlags = MF_STRING;
@@ -2002,7 +2756,7 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     if (s.showElevationProfile) {
         elevationFlags |= MF_CHECKED;
     }
-    AppendMenuW(hMenu, elevationFlags, ID_CTX_TOGGLE_ELEVATION, L"Toggle elevation profile (E)");
+    AppendMenuW(hMenu, elevationFlags, ID_CTX_TOGGLE_ELEVATION, L"Toggle altitude profile (E/A)");
 
     UINT slopeFlags = MF_STRING;
     if (s.showSlopeColouringOnTrack) {
@@ -2073,7 +2827,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SETCURSOR:
         if (s && s->tracks.size() > 1) {
             POINT pt; GetCursorPos(&pt); ScreenToClient(h, &pt);
-            if (s->resizingSidebar || abs(pt.x - s->sidebarWidth) < 5) {
+            if (s->resizingSidebar || abs(pt.x - s->sidebarWidth) < (int)(5.0f * s->dpiScale + 0.5f)) {
                 SetCursor(LoadCursor(NULL, IDC_SIZEWE));
                 return TRUE;
             }
@@ -2164,14 +2918,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         POINT pt; GetCursorPos(&pt); ScreenToClient(h, &pt);
         D2D1_POINT_2F dipPt = { (float)pt.x / s->dpiScale, (float)pt.y / s->dpiScale };
         RECT rc; GetClientRect(h, &rc);
-        int offset = (s->tracks.size() > 1) ? s->sidebarWidth : 0;
+        float dipRight = (float)rc.right / s->dpiScale;
+        float dipBottom = (float)rc.bottom / s->dpiScale;
+        float dipOffset = (s->tracks.size() > 1) ? ((float)s->sidebarWidth / s->dpiScale) : 0.0f;
 
         // Double-click handling for Elevation Profile, zooms to clicked point
         if (IsPointInElevationProfile(*s, dipPt)) {
-            if (pt.x < offset) break;
+            if (dipPt.x < dipOffset) break;
 
             float leftPadding = 50.0f, margin = 10.0f;
-            float plotW = (float)rc.right - offset - (leftPadding + margin);
+            float plotW = dipRight - dipOffset - (leftPadding + margin);
             double plotTotalDist = 0;
 
             for (size_t i = 0; i < s->tracks.size(); ++i) {
@@ -2181,7 +2937,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
             if (plotTotalDist > 0) {
                 // Map click X to distance
-                double targetDist = ((double)pt.x - (double)offset - (double)leftPadding) / (double)plotW *
+                double targetDist = ((double)dipPt.x - (double)dipOffset - (double)leftPadding) / (double)plotW *
                     plotTotalDist;
 
                 // Find the corresponding point on the track
@@ -2221,14 +2977,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
 
         // zoom if double click is on the map area
-        if (pt.x >= offset) {
+        if (dipPt.x >= dipOffset) {
             if (s->zoom < 19) {
-                float mapW = (float)rc.right - offset;
-                float mapH = (float)rc.bottom - (s->showElevationProfile ? s->profileHeight : 0);
+                float mapW = dipRight - dipOffset;
+                float mapH = dipBottom - ProfileReservedHeight(*s);
                 float centerY = mapH / 2.0f;
 
-                double targetX = s->cx - mapW / 2.0 + (pt.x - offset);
-                double targetY = s->cy - centerY + pt.y;
+                double targetX = s->cx - mapW / 2.0 + (dipPt.x - dipOffset);
+                double targetY = s->cy - centerY + dipPt.y;
 
                 // Get geographic location of click
                 double lon = x2lon(targetX, s->zoom);
@@ -2253,7 +3009,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYDOWN: if (s) { OnKey(*s, w); } break;
     case WM_CHAR: if (s) {
         wchar_t ch = (wchar_t)w;
-        if (ch == L'x' || ch == L'X') { FitToWindow(*s); InvalidateRect(h, NULL, FALSE); }
+        if (ch == L'f' || ch == L'F') { FitToWindow(*s); InvalidateRect(h, NULL, FALSE); }
     } break;
     case WM_CAPTURECHANGED:
         if (s && (HWND)l != h) {
@@ -2311,7 +3067,7 @@ static bool ParseGpxFile(const wchar_t* path, std::vector<Track>& tracks) {
     return !tracks.empty();
 }
 
-static HWND DoLoad(HWND ParentWin, const wchar_t* path, int ShowFlags) {
+static HWND DoLoad(HWND ParentWin, const wchar_t* path, const wchar_t* displayPath, int ShowFlags) {
     HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hrCo) && hrCo != RPC_E_CHANGED_MODE) return NULL;
 
@@ -2320,6 +3076,7 @@ static HWND DoLoad(HWND ParentWin, const wchar_t* path, int ShowFlags) {
 
     State* s = new State();
     s->parent = ParentWin;
+    s->fileDisplayName = GetPathStem(displayPath ? displayPath : path);
     LoadOptions(s->opt);
 
     s->tracks.clear(); // Explicitly clear any stale data before parsing
@@ -2368,11 +3125,24 @@ HWND WINAPI ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags) {
     int wchars = MultiByteToWideChar(CP_ACP, 0, FileToLoad, -1, NULL, 0);
     if (wchars <= 0) return NULL;
     std::wstring wpath(wchars, L'\0'); MultiByteToWideChar(CP_ACP, 0, FileToLoad, -1, &wpath[0], wchars);
-    return DoLoad(ParentWin, wpath.c_str(), ShowFlags);
+    return ListLoadW(ParentWin, (WCHAR*)wpath.c_str(), ShowFlags);
 }
 
 HWND WINAPI ListLoadW(HWND ParentWin, WCHAR* FileToLoad, int ShowFlags) {
-    return DoLoad(ParentWin, FileToLoad, ShowFlags);
+    Options opt{};
+    LoadOptions(opt);
+
+    TempGpxFile tempGpx;
+    const wchar_t* pathToLoad = FileToLoad;
+    if (IsFitPath(FileToLoad)) {
+        if (!ConvertFitToGpx(ParentWin, FileToLoad, opt, tempGpx.path, tempGpx.dir)) {
+            return NULL;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
+
+    HWND hwnd = DoLoad(ParentWin, pathToLoad, FileToLoad, ShowFlags);
+    return hwnd;
 }
 
 int WINAPI ListLoadNext(HWND ParentWin, HWND ListWin, char* FileToLoad, int ShowFlags) {
@@ -2386,20 +3156,31 @@ int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int Sh
     auto s = reinterpret_cast<State*>(GetWindowLongPtrW(ListWin, GWLP_USERDATA));
     if (!s) return LISTPLUGIN_ERROR;
 
+    TempGpxFile tempGpx;
+    const wchar_t* pathToLoad = FileToLoad;
+    if (IsFitPath(FileToLoad)) {
+        if (!ConvertFitToGpx(ParentWin, FileToLoad, s->opt, tempGpx.path, tempGpx.dir)) {
+            return LISTPLUGIN_ERROR;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
+
+    std::vector<Track> newTracks;
+    std::vector<GpxWaypoint> newWaypoints;
+    bool hasTracks = ParseGpxFile(pathToLoad, newTracks);
+    bool hasWaypoints = ParseGpxWaypoints(pathToLoad, newWaypoints);
+    if (!hasTracks && !hasWaypoints) {
+        return LISTPLUGIN_ERROR;
+    }
+
     //Reset hover state for new file to prevent stale index access
     s->hoverTrackIdx = -1;
     s->hoverPointIdx = -1;
-    s->tracks.clear();
+    s->tracks = std::move(newTracks);
+    s->waypoints = std::move(newWaypoints);
     s->selectedTrack = -1;
-
-    if (ParseGpxFile(FileToLoad, s->tracks))
-        ComputeBounds(*s);
-
-    //Parse waypoints additionally
-    s->waypoints.clear();
-    if (ParseGpxWaypoints(FileToLoad, s->waypoints)) {
-        ComputeBounds(*s);
-    }
+    s->fileDisplayName = GetPathStem(FileToLoad);
+    ComputeBounds(*s);
 
     //Refresh Sidebar
     if (s->tracks.size() > 1) {
@@ -2426,10 +3207,9 @@ void WINAPI ListCloseWindow(HWND ListWin) {
 }
 
 void WINAPI ListGetDetectString(char* DetectString, int maxlen) {
-    // EXT="GPX" -> standard association
-    // (force & [0]="<gpx") -> if 'Force' is used (F3 on any file), 
-    // (find("<gpx") & force) -> Scans the first 8192 bytes for the tag 
-    const char* ds = "(EXT=\"GPX\") | (FORCE & FIND(\"<gpx\"))";
+    // Extension-only detection keeps Total Commander falling back to the normal lister
+    // for unrelated text/config files.
+    const char* ds = "(EXT=\"GPX\") | (EXT=\"FIT\")";
     if (DetectString && maxlen > 0) {
         (void)lstrcpynA(DetectString, ds, maxlen);
     }

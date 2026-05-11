@@ -64,6 +64,12 @@ void LoadOptions(Options& o){
     ReadStr(iniPath, L"satelliteTileEndpoint", o.satelliteTileEndpoint, o.satelliteTileEndpoint, 256);
     ReadStr(iniPath, L"userAgent", o.userAgent, o.userAgent, 128);
     ReadBool(iniPath, L"showElevationProfile", o.showElevationProfile, o.showElevationProfile);
-	ReadBool(iniPath, L"showSlopeColouringOnTrack", o.showSlopeColouringOnTrack, o.showSlopeColouringOnTrack);
+    ReadBool(iniPath, L"showSlopeColouringOnTrack", o.showSlopeColouringOnTrack, o.showSlopeColouringOnTrack);
     ReadFloat(iniPath, L"trackLineWidth", o.trackLineWidth, o.trackLineWidth);
+    ReadStr(iniPath, L"speedProfileColor", o.speedProfileColor, o.speedProfileColor, 16);
+    ReadStr(iniPath, L"fitConverter", o.fitConverter, o.fitConverter, MAX_PATH);
+    ReadStr(iniPath, L"fitArgs", o.fitArgs, o.fitArgs, 512);
+    ReadInt(iniPath, L"fitTimeoutSec", o.fitTimeoutSec, o.fitTimeoutSec);
+    if (o.fitTimeoutSec < 1) o.fitTimeoutSec = 1;
+    if (o.fitTimeoutSec > 3600) o.fitTimeoutSec = 3600;
 }

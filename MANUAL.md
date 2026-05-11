@@ -2,6 +2,8 @@
 
 **Binary names:** `GPXLister.wlx` and `GPXLister.wlx64`
 
+**FIT support:** `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file, rendered through the existing GPX engine, and cleaned up after loading.
+
 **Purpose:** Fast preview of `.gpx` tracks in Total Commander’s Lister (10/11+), featuring interactive maps, elevation profiles, and multi-track selection.
 
 ## 1) Intent & Overview
@@ -26,16 +28,22 @@
 
 ## 3) Installation
 
+### Build Output Folders
+
+- The Visual Studio project targets the **v145** toolset from the Visual Studio 2026 Insiders distribution.
+- Win32 builds write to `x32\<Configuration>\GPXLister.wlx`.
+- x64 builds write to `x64\<Configuration>\GPXLister.wlx64`.
+
 ### A) Manual Installation
 
-1. Copy **`GPXLister.wlx`** (and/or **`GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`).
+1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support.
 2. In **Total Commander**: Navigate to `Configuration → Options… → Plugins → Lister plugins (WLX) → Add…`.
 3. Select the plugin binary and confirm the detect string.
 4. *(Optional)* Place a customised **`GPXLister.ini`** in the same folder as the plugin.
 
 ### B) Recommended Detect String
 
-EXT="GPX" | (FORCE & FIND("<gpx"))
+EXT="GPX" | EXT="FIT"
 
 ## 4) Usage & Controls
 
@@ -45,7 +53,7 @@ EXT="GPX" | (FORCE & FIND("<gpx"))
 
 - **+ / −** — Zoom in and out.
 
-- **X / x** — **Fit to window** (recentre and choose the best zoom for the active selection).
+- **F / f** — **Fit to window** (recentre and choose the best zoom for the active selection).
 
 - **M/m**— Toggle **map tiles** on/off.
 
@@ -55,7 +63,9 @@ EXT="GPX" | (FORCE & FIND("<gpx"))
 
 - **E/e** — Toggle **elevation profile** (the state is saved automatically to the INI file).
 
-- **V/v** — Toggle **speed profile** (into the elevation window, if it's shown, it not press E before or after)
+- **V/v** — Toggle **speed profile** independently from the elevation profile.
+
+- **I/i** — Open the DPI-aware track information dialog.
 
 - **S/s** — Toggle **slope-based track colouring** on/off (progressive colouring based on gradient).
   
@@ -71,7 +81,7 @@ EXT="GPX" | (FORCE & FIND("<gpx"))
   
   - Toggle tiles (M)
   - Toggle tile server (T)
-  - Fit to window (X)
+  - Fit to window (F)
   - Toggle grid when tiles are off (G)
   - Toggle elevation profile (E)
   - Toggle speed profile visibility (V)
@@ -116,6 +126,10 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `showElevationProfile`      | int    | `1`          | Default visibility of the elevation window.                                        |
   | `showSlopeColouringOnTrack` | int    | `0`          | Default visibility of slope-based progressive colouring on the map track polyline. |
   | `trackLineWidth`            | float  | `2.0`        | Stroke width used to draw the track polyline on the map (clamped to a safe range). |
+  | `speedProfileColor`         | string | `#0059F2`    | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.   |
+  | `fitConverter`              | string | `Fit2Gpx.exe` | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`. |
+  | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`. |
+  | `fitTimeoutSec`             | int    | `60`         | Maximum FIT conversion time before the converter is terminated and an error is shown. |
   | `tileEndpoint`              | string | `OSM URL`    | Standard Slippy URL template ({z}, {x}, {y}).                                      |
   | `satelliteTileEndpoint`     | string | `Google Sat` | URL template used when Satellite Mode is toggled. Same standard of tileEndpoint    |
   | `userAgent`                 | string | `GPXLister`  | HTTP User-Agent for requests.                                                      |
@@ -159,7 +173,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
 
 - **Blank background:** Verify internet connectivity and ensure map tiles are enabled (**M** key).
 
-- **Fit not working:** Ensure a track is actually selected. Press **X** to recentre the view.
+- **Fit not working:** Ensure a track is actually selected. Press **F** to recentre the view.
 
 - **Slow loading:** Increase the number of `workers` or `prefetchRings` in the INI file if your connection permits.
   
@@ -172,6 +186,18 @@ GPXLister can render the track polyline with progressive colouring driven by the
 - Largely coded via Gemini Pro.
   
   ## Versions
+
+- **v2.3 - GPX viewing polish**
+
+  - Changed **Fit to Window** to the standard **F** shortcut and removed the old X shortcut.
+  - Redesigned the **I** information dialog with a DPI-aware card layout and clearer spacing.
+  - Fixed summary elapsed time and average speed for patched/multi-track files with large timestamp gaps.
+  - Made ascent/descent and sustained slope calculations robust against noisy live-recorded GPX samples.
+  - Made speed and elevation profiles independently toggleable (**V** and **E**) and gave the speed profile its own scale.
+  - Added configurable `speedProfileColor` with blue as the default.
+  - Added transparent `.fit` support through hidden `Fit2Gpx.exe` conversion, with template-based `fitArgs` and temporary GPX cleanup.
+  - Improved mouse-wheel zoom anchoring, sidebar resizing, profile/map hover synchronisation, and overlay readability under DPI scaling.
+  - Build outputs are now organised under `x32` and `x64`.
 
 - **v1.0** — Initial public release.
 
@@ -211,7 +237,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
   
   - **Fixed** the Elevation Profile window appearing flattened/invisible on high-resolution screens by enforcing correct monitor-aware scaling.
   
-  - **Improved** "Fit to Window" ('X' key) algorithm: increased map usage (tighter margins) and corrected vertical centering logic for a perfect view of the track.
+  - **Improved** "Fit to Window" ('F' key) algorithm: increased map usage (tighter margins) and corrected vertical centering logic for a perfect view of the track.
   
   - **Fixed**: Switched internal coordinate systems to floating-point precision to prevent sub-pixel rounding errors during panning and zooming.
   

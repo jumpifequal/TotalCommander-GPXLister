@@ -1,0 +1,13 @@
+[plugininstall]
+type=wlx
+name=GPXLister
+title=GPXLister (GPX/FIT track viewer)
+description=Direct2D GPX/FIT viewer with map tiles, summaries, altitude/speed profiles, and hidden FIT-to-GPX conversion
+file=GPXLister.wlx
+defaultdir=GPXLister
+defaultextension=gpx;fit
+defaultfilter=EXT="GPX" | EXT="FIT"
+version=2.3
+author=Enrico Frumento
+homepage=https://www.ghisler.com/listerplugins.htm
+notes=Requires Windows 10+. Keep Fit2Gpx.exe beside the plugin for FIT support. Build outputs are x32\Release\GPXLister.wlx and x64\Release\GPXLister.wlx64
