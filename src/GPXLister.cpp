@@ -428,6 +428,13 @@ static bool IsFitPath(const wchar_t* path) {
     return ext && _wcsicmp(ext, L".fit") == 0;
 }
 
+static bool IsSupportedInputPath(const wchar_t* path) {
+    if (!path) return false;
+    const wchar_t* ext = PathFindExtensionW(path);
+    if (!ext || *ext != L'.') return false;
+    return _wcsicmp(ext, L".gpx") == 0 || _wcsicmp(ext, L".fit") == 0;
+}
+
 static std::wstring QuoteArg(const std::wstring& s) {
     std::wstring q = L"\"";
     for (wchar_t ch : s) {
@@ -3129,10 +3136,14 @@ HWND WINAPI ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags) {
 }
 
 HWND WINAPI ListLoadW(HWND ParentWin, WCHAR* FileToLoad, int ShowFlags) {
-    Options opt{};
+    if (!IsSupportedInputPath(FileToLoad)) {
+        return NULL;
+    }
+	
+	Options opt{};	
     LoadOptions(opt);
-
-    TempGpxFile tempGpx;
+	
+	TempGpxFile tempGpx;
     const wchar_t* pathToLoad = FileToLoad;
     if (IsFitPath(FileToLoad)) {
         if (!ConvertFitToGpx(ParentWin, FileToLoad, opt, tempGpx.path, tempGpx.dir)) {
@@ -3155,6 +3166,7 @@ int WINAPI ListLoadNext(HWND ParentWin, HWND ListWin, char* FileToLoad, int Show
 int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int ShowFlags) {
     auto s = reinterpret_cast<State*>(GetWindowLongPtrW(ListWin, GWLP_USERDATA));
     if (!s) return LISTPLUGIN_ERROR;
+	if (!IsSupportedInputPath(FileToLoad)) return LISTPLUGIN_ERROR;
 
     TempGpxFile tempGpx;
     const wchar_t* pathToLoad = FileToLoad;
