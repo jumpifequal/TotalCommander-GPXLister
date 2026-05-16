@@ -2,7 +2,7 @@
 
 **Binary names:** `GPXLister.wlx` and `GPXLister.wlx64`
 
-**FIT support:** `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file, rendered through the existing GPX engine, and cleaned up after loading.
+**FIT/KML support:** `.fit` files are converted transparently through `Fit2Gpx.exe`, and `.kml` files through `kml2gpx.exe`, into a temporary GPX file, rendered through the existing GPX engine, and cleaned up after loading.
 
 **Purpose:** Fast preview of `.gpx` tracks in Total Commander’s Lister (10/11+), featuring interactive maps, elevation profiles, and multi-track selection.
 
@@ -36,14 +36,14 @@
 
 ### A) Manual Installation
 
-1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support.
+1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support and **`kml2gpx.exe`** in the same folder if you want `.kml` support.
 2. In **Total Commander**: Navigate to `Configuration → Options… → Plugins → Lister plugins (WLX) → Add…`.
 3. Select the plugin binary and confirm the detect string.
 4. *(Optional)* Place a customised **`GPXLister.ini`** in the same folder as the plugin.
 
 ### B) Recommended Detect String
 
-EXT="GPX" | EXT="FIT"
+EXT="GPX" | EXT="FIT" | EXT="KML"
 
 ## 4) Usage & Controls
 
@@ -130,6 +130,9 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `fitConverter`              | string | `Fit2Gpx.exe` | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`. |
   | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`. |
   | `fitTimeoutSec`             | int    | `60`         | Maximum FIT conversion time before the converter is terminated and an error is shown. |
+  | `kmlConverter`              | string | `kml2gpx.exe` | Converter executable for `.kml` files. Relative names search the plugin folder first, then `PATH`. |
+  | `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`. |
+  | `kmlTimeoutSec`             | int    | `60`         | Maximum KML conversion time before the converter is terminated and an error is shown. |
   | `tileEndpoint`              | string | `OSM URL`    | Standard Slippy URL template ({z}, {x}, {y}).                                      |
   | `satelliteTileEndpoint`     | string | `Google Sat` | URL template used when Satellite Mode is toggled. Same standard of tileEndpoint    |
   | `userAgent`                 | string | `GPXLister`  | HTTP User-Agent for requests.                                                      |
@@ -186,6 +189,10 @@ GPXLister can render the track polyline with progressive colouring driven by the
 - Largely coded via Gemini Pro.
   
   ## Versions
+
+- **v2.4 - KML import support**
+
+  - Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
 
 - **v2.3 - GPX viewing polish**
 

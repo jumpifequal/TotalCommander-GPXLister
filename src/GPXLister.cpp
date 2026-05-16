@@ -428,11 +428,17 @@ static bool IsFitPath(const wchar_t* path) {
     return ext && _wcsicmp(ext, L".fit") == 0;
 }
 
+static bool IsKmlPath(const wchar_t* path) {
+    if (!path) return false;
+    const wchar_t* ext = PathFindExtensionW(path);
+    return ext && _wcsicmp(ext, L".kml") == 0;
+}
+
 static bool IsSupportedInputPath(const wchar_t* path) {
     if (!path) return false;
     const wchar_t* ext = PathFindExtensionW(path);
     if (!ext || *ext != L'.') return false;
-    return _wcsicmp(ext, L".gpx") == 0 || _wcsicmp(ext, L".fit") == 0;
+    return _wcsicmp(ext, L".gpx") == 0 || _wcsicmp(ext, L".fit") == 0 || _wcsicmp(ext, L".kml") == 0;
 }
 
 static std::wstring QuoteArg(const std::wstring& s) {
@@ -489,6 +495,31 @@ static std::wstring FindFitConverterInPath(const std::wstring& configured) {
     return L"";
 }
 
+static std::wstring FindKmlConverterInPath(const std::wstring& configured) {
+    DWORD need = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    if (need == 0) return L"";
+
+    std::wstring env(need, L'\0');
+    DWORD got = GetEnvironmentVariableW(L"PATH", &env[0], need);
+    if (got == 0 || got >= need) return L"";
+    env.resize(got);
+
+    size_t start = 0;
+    while (start <= env.size()) {
+        size_t end = env.find(L';', start);
+        std::wstring dir = env.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        if (!dir.empty() && !PathIsRelativeW(dir.c_str())) {
+            wchar_t candidate[MAX_PATH]{};
+            lstrcpynW(candidate, dir.c_str(), MAX_PATH);
+            PathAppendW(candidate, configured.c_str());
+            if (FileExists(candidate)) return candidate;
+        }
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+    return L"";
+}
+
 static std::wstring ResolveFitConverterPath(const Options& opt) {
     std::wstring configured = opt.fitConverter;
     if (configured.empty()) configured = L"Fit2Gpx.exe";
@@ -500,6 +531,21 @@ static std::wstring ResolveFitConverterPath(const Options& opt) {
         if (FileExists(pluginPath)) return pluginPath;
 
         return FindFitConverterInPath(configured);
+    }
+    return configured;
+}
+
+static std::wstring ResolveKmlConverterPath(const Options& opt) {
+    std::wstring configured = opt.kmlConverter;
+    if (configured.empty()) configured = L"kml2gpx.exe";
+
+    if (PathIsRelativeW(configured.c_str())) {
+        wchar_t pluginPath[MAX_PATH]{};
+        lstrcpynW(pluginPath, GetPluginDir().c_str(), MAX_PATH);
+        PathAppendW(pluginPath, configured.c_str());
+        if (FileExists(pluginPath)) return pluginPath;
+
+        return FindKmlConverterInPath(configured);
     }
     return configured;
 }
@@ -629,6 +675,103 @@ static bool ConvertFitToGpx(HWND parent, const wchar_t* fitPath, const Options& 
         wchar_t msg[1024]{};
         swprintf(msg, 1024, L"FIT conversion failed.\n\nConverter exit code: %lu", (unsigned long)exitCode);
         ShowFitError(parent, msg);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    return true;
+}
+
+static std::wstring BuildKmlCommandLine(const std::wstring& converter, const wchar_t* kmlPath, const std::wstring& outGpxPath, const Options& opt) {
+    std::wstring tmpl = opt.kmlArgs;
+    if (tmpl.empty()) {
+        return QuoteArg(converter) + L" " + QuoteArg(kmlPath) + L" " + QuoteArg(outGpxPath);
+    }
+
+    bool hasTemplate = false;
+    hasTemplate |= ReplaceAll(tmpl, L"{converter}", QuoteArg(converter));
+    hasTemplate |= ReplaceAll(tmpl, L"{input}", QuoteArg(kmlPath));
+    hasTemplate |= ReplaceAll(tmpl, L"{output}", QuoteArg(outGpxPath));
+
+    if (hasTemplate) {
+        if (tmpl.find(converter) != std::wstring::npos || tmpl.find(L"{converter}") != std::wstring::npos) {
+            return tmpl;
+        }
+        return QuoteArg(converter) + L" " + tmpl;
+    }
+
+    return QuoteArg(converter) + L" " + QuoteArg(kmlPath) + L" " + QuoteArg(outGpxPath) + L" " + tmpl;
+}
+
+static void ShowKmlError(HWND parent, const std::wstring& text) {
+    MessageBoxW(parent, text.c_str(), L"GPXLister KML conversion error", MB_OK | MB_ICONERROR);
+}
+
+static bool ConvertKmlToGpx(HWND parent, const wchar_t* kmlPath, const Options& opt, std::wstring& outGpxPath, std::wstring& outTempDir) {
+    outGpxPath = BuildTempGpxPath(kmlPath, outTempDir);
+    if (outGpxPath.empty()) {
+        ShowKmlError(parent, L"Unable to create a temporary directory for KML conversion.");
+        return false;
+    }
+
+    std::wstring converter = ResolveKmlConverterPath(opt);
+    if (converter.empty() || !FileExists(converter)) {
+        ShowKmlError(parent, L"Unable to find KML converter. Check kmlConverter in GPXLister.ini.");
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    std::wstring cmd = BuildKmlCommandLine(converter, kmlPath, outGpxPath, opt);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    cmdline.push_back(L'\0');
+
+    if (!CreateProcessW(converter.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        wchar_t msg[1024]{};
+        swprintf(msg, 1024, L"Unable to start KML converter:\n%s\n\nWin32 error: %lu", converter.c_str(), (unsigned long)GetLastError());
+        ShowKmlError(parent, msg);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        return false;
+    }
+
+    DWORD waitMs = (DWORD)opt.kmlTimeoutSec * 1000;
+    DWORD wait = WaitForSingleObject(pi.hProcess, waitMs);
+    if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        DeleteFileW(outGpxPath.c_str());
+        RemoveDirectoryW(outTempDir.c_str());
+        outGpxPath.clear();
+        outTempDir.clear();
+        ShowKmlError(parent, L"KML conversion timed out.");
+        return false;
+    }
+
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (wait != WAIT_OBJECT_0 || exitCode != 0 || !FileExists(outGpxPath)) {
+        wchar_t msg[1024]{};
+        swprintf(msg, 1024, L"KML conversion failed.\n\nConverter exit code: %lu", (unsigned long)exitCode);
+        ShowKmlError(parent, msg);
         DeleteFileW(outGpxPath.c_str());
         RemoveDirectoryW(outTempDir.c_str());
         outGpxPath.clear();
@@ -3151,6 +3294,12 @@ HWND WINAPI ListLoadW(HWND ParentWin, WCHAR* FileToLoad, int ShowFlags) {
         }
         pathToLoad = tempGpx.path.c_str();
     }
+    if (IsKmlPath(FileToLoad)) {
+        if (!ConvertKmlToGpx(ParentWin, FileToLoad, opt, tempGpx.path, tempGpx.dir)) {
+            return NULL;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
 
     HWND hwnd = DoLoad(ParentWin, pathToLoad, FileToLoad, ShowFlags);
     return hwnd;
@@ -3172,6 +3321,12 @@ int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int Sh
     const wchar_t* pathToLoad = FileToLoad;
     if (IsFitPath(FileToLoad)) {
         if (!ConvertFitToGpx(ParentWin, FileToLoad, s->opt, tempGpx.path, tempGpx.dir)) {
+            return LISTPLUGIN_ERROR;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
+    if (IsKmlPath(FileToLoad)) {
+        if (!ConvertKmlToGpx(ParentWin, FileToLoad, s->opt, tempGpx.path, tempGpx.dir)) {
             return LISTPLUGIN_ERROR;
         }
         pathToLoad = tempGpx.path.c_str();
@@ -3221,7 +3376,7 @@ void WINAPI ListCloseWindow(HWND ListWin) {
 void WINAPI ListGetDetectString(char* DetectString, int maxlen) {
     // Extension-only detection keeps Total Commander falling back to the normal lister
     // for unrelated text/config files.
-    const char* ds = "(EXT=\"GPX\") | (EXT=\"FIT\")";
+    const char* ds = "(EXT=\"GPX\") | (EXT=\"FIT\") | (EXT=\"KML\")";
     if (DetectString && maxlen > 0) {
         (void)lstrcpynA(DetectString, ds, maxlen);
     }

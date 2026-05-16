@@ -72,4 +72,9 @@ void LoadOptions(Options& o){
     ReadInt(iniPath, L"fitTimeoutSec", o.fitTimeoutSec, o.fitTimeoutSec);
     if (o.fitTimeoutSec < 1) o.fitTimeoutSec = 1;
     if (o.fitTimeoutSec > 3600) o.fitTimeoutSec = 3600;
+    ReadStr(iniPath, L"kmlConverter", o.kmlConverter, o.kmlConverter, MAX_PATH);
+    ReadStr(iniPath, L"kmlArgs", o.kmlArgs, o.kmlArgs, 512);
+    ReadInt(iniPath, L"kmlTimeoutSec", o.kmlTimeoutSec, o.kmlTimeoutSec);
+    if (o.kmlTimeoutSec < 1) o.kmlTimeoutSec = 1;
+    if (o.kmlTimeoutSec > 3600) o.kmlTimeoutSec = 3600;
 }

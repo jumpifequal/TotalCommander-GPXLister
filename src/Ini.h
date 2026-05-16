@@ -32,6 +32,9 @@ struct Options {
     wchar_t fitConverter[MAX_PATH] = L"Fit2Gpx.exe";
     wchar_t fitArgs[512] = L"";
     int fitTimeoutSec = 60;
+    wchar_t kmlConverter[MAX_PATH] = L"kml2gpx.exe";
+    wchar_t kmlArgs[512] = L"";
+    int kmlTimeoutSec = 60;
 };
 
 void LoadOptions(Options& o);

@@ -1,6 +1,12 @@
 # Changelog
 
-## v2.3 - GPX viewing polish and support for .fit files
+## v2.4 - KML import support
+
+- Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with `kmlConverter`, template-based `kmlArgs`, `kmlTimeoutSec`, and unconditional temporary GPX cleanup.
+- Extended extension-only detection and installer defaults to `GPX`/`FIT`/`KML`.
+- Updated distribution packaging to include `kml2gpx.exe` beside the plugin and existing `Fit2Gpx.exe`.
+
+## v2.3 - GPX viewing polish
 
 - Changed Fit to Window to the usual `F` shortcut and removed the old `X` compatibility shortcut.
 - Reworked the `I` information dialog with a cleaner DPI-aware card layout and translucent map-integrated presentation.
