@@ -75,10 +75,36 @@ static std::wstring OpenFileDialog(const wchar_t* filter) {
     ofn.lpstrFile = file;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle = L"Select a gpx file";
+    ofn.lpstrTitle = L"Select a GPX, FIT, KML, or KMZ file";
     if (GetOpenFileNameW(&ofn))
         return file;
     return L"";
+}
+
+static bool HasIniFile(const std::wstring& dir) {
+    if (dir.empty()) return false;
+    wchar_t candidate[MAX_PATH];
+    wcsncpy_s(candidate, dir.c_str(), _TRUNCATE);
+    PathAppendW(candidate, L"GPXLister.ini");
+    return FileExists(candidate);
+}
+
+static void ConfigurePluginWorkingDirectory(const std::wstring& wlxPath, const std::wstring& exeDir) {
+    wchar_t cwdBuf[MAX_PATH];
+    if (GetCurrentDirectoryW(MAX_PATH, cwdBuf) > 0 && HasIniFile(cwdBuf)) {
+        return;
+    }
+
+    std::wstring repoRoot = GetDirName(GetDirName(exeDir));
+    if (HasIniFile(repoRoot)) {
+        SetCurrentDirectoryW(repoRoot.c_str());
+        return;
+    }
+
+    std::wstring wlxDir = GetDirName(wlxPath);
+    if (HasIniFile(wlxDir)) {
+        SetCurrentDirectoryW(wlxDir.c_str());
+    }
 }
 
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -132,6 +158,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 0;
     }
 
+    ConfigurePluginWorkingDirectory(wlxPath, exeDir);
+
     // Load plugin
     HMODULE mod = LoadLibraryW(wlxPath);
     if (!mod) { MessageBoxW(NULL, L"Failed to load WLX", L"WLXHarness", MB_ICONERROR); return 0; }
@@ -158,12 +186,12 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
                                 NULL, NULL, hInst, NULL);
     if (!host) return 0;
 
-    // Choose a gpx file
+    // Choose a GPX/FIT/KML/KMZ file
     std::wstring gpx;
     if (argc >= 3 && argv && argv[2] && argv[2][0]) {
         gpx = ResolveInputPath(argv[2], exeDir);
     } else {
-        gpx = OpenFileDialog(L"gpx Files (*.gpx)\0*.gpx\0All Files (*.*)\0*.*\0\0");
+        gpx = OpenFileDialog(L"GPX/FIT/KML/KMZ Files (*.gpx;*.fit;*.kml;*.kmz)\0*.gpx;*.fit;*.kml;*.kmz\0All Files (*.*)\0*.*\0\0");
     }
     if (gpx.empty()) {
         if (argv) LocalFree(argv);

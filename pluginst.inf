@@ -1,13 +1,13 @@
 [plugininstall]
 type=wlx
 name=GPXLister
-title=GPXLister (GPX/FIT/KML track viewer)
-description=Direct2D GPX/FIT/KML viewer with map tiles, summaries, altitude/speed profiles, and hidden FIT/KML-to-GPX conversion
+title=GPXLister (GPX/FIT/KML/KMZ track viewer)
+description=Direct2D GPX/FIT/KML/KMZ viewer with map tiles, summaries, altitude/speed profiles, and hidden FIT/KML/KMZ-to-GPX conversion
 file=GPXLister.wlx
 defaultdir=GPXLister
-defaultextension=gpx;fit;kml
-defaultfilter=EXT="GPX" | EXT="FIT" | EXT="KML"
-version=2.4
-author=Enrico Frumento
-homepage=https://www.ghisler.com/listerplugins.htm
-notes=Requires Windows 10+. Keep Fit2Gpx.exe beside the plugin for FIT support and kml2gpx.exe beside it for KML support. Build outputs are x32\Release\GPXLister.wlx and x64\Release\GPXLister.wlx64
+defaultextension=gpx;fit;kml;kmz
+defaultfilter=EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
+version=2.5
+author=jumpifequal
+homepage=https://github.com/jumpifequal/TotalCommander-GPXLister
+notes=Requires Windows 10+. Keep fit2gpx.exe and kml2gpx.exe beside the plugin for FIT,KML,KMZ support

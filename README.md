@@ -1,6 +1,6 @@
 # GPXLister (WLX) for Total Commander
 
-A high-performance Lister plugin for Total Commander that renders GPX, FIT, and KML tracks using Direct2D and WIC, bypassing GDI+ to avoid header conflicts and ensure hardware acceleration.
+A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML, and KMZ tracks using Direct2D and WIC, bypassing GDI+ to avoid header conflicts and ensure hardware acceleration.
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
@@ -8,7 +8,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, and 
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
 - **FIT Support**: `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file and cleaned up after loading.
-- **KML Support**: `.kml` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
+- **KML/KMZ Support**: `.kml` and `.kmz` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **Satellite Mode Toggle**: Instantly switch between map providers (e.g., OSM to Google Satellite) using the `T` key.
 - **Asynchronous Tiles**: PNG tiles are handled via **WIC** and drawn as D2D bitmaps; background loading ensures the UI remains responsive.
 - **Multi-Track Support**: Full support for GPX files with multiple tracks, including individual track names and colours.
@@ -28,9 +28,9 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, and 
 
 ## Installation (Total Commander 10/11+)
 
-1. Copy `x32\Release\GPXLister.wlx` and/or `x64\Release\GPXLister.wlx64` to your plugin directory, together with `Fit2Gpx.exe` if you want `.fit` support and `kml2gpx.exe` if you want `.kml` support.
+1. Copy `GPXLister.wlx` and/or `GPXLister.wlx64` to your plugin directory, together with `Fit2Gpx.exe` if you want `.fit` support and `kml2gpx.exe` if you want `.kml` and `.kmz` support.
 2. Add the DLL as a Lister plugin in Total Commander settings.
-3. Recommended Detect String: `EXT="GPX" | EXT="FIT" | EXT="KML"`
+3. Recommended Detect String: `EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"`
 
 ## Controls & Shortcuts
 
@@ -58,7 +58,7 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 - `fitConverter` (string, default `Fit2Gpx.exe`): Converter executable for `.fit` files. Relative names are searched in the plugin folder first, then in `PATH`.
 - `fitArgs` (string, default `{input} {output} --elevation-dataset srtm30m,eudem25m`): Fit2Gpx command-line template. Supported placeholders are `{converter}`, `{input}`, and `{output}`.
 - `fitTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
-- `kmlConverter` (string, default `kml2gpx.exe`): Converter executable for `.kml` files. Relative names are searched in the plugin folder first, then in `PATH`.
+- `kmlConverter` (string, default `kml2gpx.exe`): Converter executable for `.kml` and `.kmz` files. Relative names are searched in the plugin folder first, then in `PATH`.
 - `kmlArgs` (string, default `{input} {output} --elevation-dataset srtm30m,eudem25m`): kml2gpx command-line template. Supported placeholders are `{converter}`, `{input}`, and `{output}`.
 - `kmlTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
 - When slope colouring is enabled, the gradient is computed from elevation change over distance and mapped to a blue→green→red ramp, then blended with the per-track base colour.
