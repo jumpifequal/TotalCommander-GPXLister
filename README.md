@@ -2,6 +2,8 @@
 
 A high-performance Lister plugin for Total Commander that renders GPX, FIT, and KML tracks using Direct2D and WIC, bypassing GDI+ to avoid header conflicts and ensure hardware acceleration.
 
+**Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
+
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
