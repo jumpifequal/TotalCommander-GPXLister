@@ -422,6 +422,13 @@ static bool FileExists(const std::wstring& path) {
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+static std::wstring ResolveFromCurrentDir(const std::wstring& configured) {
+    wchar_t cwd[MAX_PATH]{};
+    if (GetCurrentDirectoryW(MAX_PATH, cwd) <= 0) return L"";
+    PathAppendW(cwd, configured.c_str());
+    return FileExists(cwd) ? std::wstring(cwd) : L"";
+}
+
 static bool IsFitPath(const wchar_t* path) {
     if (!path) return false;
     const wchar_t* ext = PathFindExtensionW(path);
@@ -431,14 +438,15 @@ static bool IsFitPath(const wchar_t* path) {
 static bool IsKmlPath(const wchar_t* path) {
     if (!path) return false;
     const wchar_t* ext = PathFindExtensionW(path);
-    return ext && _wcsicmp(ext, L".kml") == 0;
+    return ext && (_wcsicmp(ext, L".kml") == 0 || _wcsicmp(ext, L".kmz") == 0);
 }
 
 static bool IsSupportedInputPath(const wchar_t* path) {
     if (!path) return false;
     const wchar_t* ext = PathFindExtensionW(path);
     if (!ext || *ext != L'.') return false;
-    return _wcsicmp(ext, L".gpx") == 0 || _wcsicmp(ext, L".fit") == 0 || _wcsicmp(ext, L".kml") == 0;
+    return _wcsicmp(ext, L".gpx") == 0 || _wcsicmp(ext, L".fit") == 0 ||
+           _wcsicmp(ext, L".kml") == 0 || _wcsicmp(ext, L".kmz") == 0;
 }
 
 static std::wstring QuoteArg(const std::wstring& s) {
@@ -530,6 +538,9 @@ static std::wstring ResolveFitConverterPath(const Options& opt) {
         PathAppendW(pluginPath, configured.c_str());
         if (FileExists(pluginPath)) return pluginPath;
 
+        std::wstring cwdPath = ResolveFromCurrentDir(configured);
+        if (!cwdPath.empty()) return cwdPath;
+
         return FindFitConverterInPath(configured);
     }
     return configured;
@@ -544,6 +555,9 @@ static std::wstring ResolveKmlConverterPath(const Options& opt) {
         lstrcpynW(pluginPath, GetPluginDir().c_str(), MAX_PATH);
         PathAppendW(pluginPath, configured.c_str());
         if (FileExists(pluginPath)) return pluginPath;
+
+        std::wstring cwdPath = ResolveFromCurrentDir(configured);
+        if (!cwdPath.empty()) return cwdPath;
 
         return FindKmlConverterInPath(configured);
     }
@@ -3376,7 +3390,7 @@ void WINAPI ListCloseWindow(HWND ListWin) {
 void WINAPI ListGetDetectString(char* DetectString, int maxlen) {
     // Extension-only detection keeps Total Commander falling back to the normal lister
     // for unrelated text/config files.
-    const char* ds = "(EXT=\"GPX\") | (EXT=\"FIT\") | (EXT=\"KML\")";
+    const char* ds = "(EXT=\"GPX\") | (EXT=\"FIT\") | (EXT=\"KML\") | (EXT=\"KMZ\")";
     if (DetectString && maxlen > 0) {
         (void)lstrcpynA(DetectString, ds, maxlen);
     }

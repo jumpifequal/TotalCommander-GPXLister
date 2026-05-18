@@ -45,6 +45,15 @@ void LoadOptions(Options& o){
     wchar_t dllPath[MAX_PATH]; GetModuleFileNameW((HMODULE)&__ImageBase, dllPath, MAX_PATH);
     PathRemoveFileSpecW(dllPath);
     wchar_t iniPath[MAX_PATH]; lstrcpyW(iniPath, dllPath); PathAppendW(iniPath, L"GPXLister.ini");
+    if (GetFileAttributesW(iniPath) == INVALID_FILE_ATTRIBUTES) {
+        wchar_t cwdIni[MAX_PATH]{};
+        if (GetCurrentDirectoryW(MAX_PATH, cwdIni) > 0) {
+            PathAppendW(cwdIni, L"GPXLister.ini");
+            if (GetFileAttributesW(cwdIni) != INVALID_FILE_ATTRIBUTES) {
+                lstrcpyW(iniPath, cwdIni);
+            }
+        }
+    }
     // read values (keep defaults if file missing)
     ReadBool(iniPath, L"useTiles", o.useTiles, o.useTiles);
     ReadBool(iniPath, L"showGridWhenNoTiles", o.showGridWhenNoTiles, o.showGridWhenNoTiles);
