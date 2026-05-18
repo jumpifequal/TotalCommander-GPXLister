@@ -2,6 +2,7 @@
 
 ## v2.4 - KML import support
 
+- Recompiled using stable Visual Studio 2026 and no vcpkg to avoid Virus Total warnings
 - Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with `kmlConverter`, template-based `kmlArgs`, `kmlTimeoutSec`, and unconditional temporary GPX cleanup.
 - Extended extension-only detection and installer defaults to `GPX`/`FIT`/`KML`.
 - Updated distribution packaging to include `kml2gpx.exe` beside the plugin and existing `Fit2Gpx.exe`.
