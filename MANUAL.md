@@ -190,6 +190,11 @@ GPXLister can render the track polyline with progressive colouring driven by the
   
   ## Versions
 
+- **v2.5.1 - Reliable Fit to Window shortcut**
+  
+  - Fixed unreliable **F / Fit to window** activation in Total Commander by handling its WLX host command path.
+  - Preserved matching behavior for the map keyboard shortcut and contextual-menu action.
+
 - **v2.5 - KMZ import support and recompile via VS 2026**
   
   * Added transparent `.kmz` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.

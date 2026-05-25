@@ -4,6 +4,8 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
+**Latest release:** `v2.5.1` fixes unreliable `F` / **Fit to Window** handling when Total Commander routes the shortcut through the WLX command interface.
+
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
@@ -36,7 +38,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 - **Zoom**: Mouse wheel or `+`/`-` keys (zooms toward cursor).
 - **Pan**: Left-click drag or **Arrow Keys**.
-- **Fit to Window**: Press `F` or **Double-click** (fits the selected track or all tracks).
+- **Fit to Window**: Press `F` or **Double-click** (fits the selected track or all tracks; `F` is handled reliably through Total Commander's Lister command path).
 - **Sidebar**: Drag the right edge to resize; select tracks to filter the view.
 - **Toggles**:
   - `T`: Satellite Mode on/off (switches between tile servers).

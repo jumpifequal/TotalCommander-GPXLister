@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.5.1 - Reliable Fit to Window shortcut
+
+- Fixed the `F` shortcut in Total Commander Lister by handling the host-routed fit command through the WLX `ListSendCommand` interface.
+- Kept the existing right-click **Fit to window** action and direct map keyboard handling consistent with the host shortcut.
+
 ## v2.5 - KMZ import support and recompile via VS 2026
 
 - Recompiled using stable Visual Studio 2026 and no vcpkg to avoid Virus Total warnings
