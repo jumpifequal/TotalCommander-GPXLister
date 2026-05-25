@@ -3396,7 +3396,20 @@ void WINAPI ListGetDetectString(char* DetectString, int maxlen) {
     }
 }
 
-int WINAPI ListSendCommand(HWND, int, int) { return LISTPLUGIN_OK; }
+int WINAPI ListSendCommand(HWND ListWin, int Command, int) {
+    auto s = reinterpret_cast<State*>(GetWindowLongPtrW(ListWin, GWLP_USERDATA));
+    if (!s) return LISTPLUGIN_ERROR;
+
+    if (Command == lc_newparams) {
+        // Total Commander routes its F shortcut here as a toggled image-view option.
+        // For a map view, fit is an action: both toggle directions should re-fit.
+        FitToWindow(*s);
+        InvalidateRect(ListWin, nullptr, FALSE);
+        SetFocus(ListWin);
+    }
+
+    return LISTPLUGIN_OK;
+}
 
 void WINAPI ListSetDefaultParams(ListDefaultParamStruct*) {}
 
