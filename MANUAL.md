@@ -65,6 +65,8 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 
 - **V/v** — Toggle **speed profile** independently from the elevation profile.
 
+- **Ctrl+C / Ctrl+Ins** — Copy the current visible Lister view to the clipboard as PNG.
+
 - **I/i** — Open the DPI-aware track information dialog.
 
 - **S/s** — Toggle **slope-based track colouring** on/off (progressive colouring based on gradient).
@@ -83,6 +85,8 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
   - Toggle tile server (T)
   - Fit to window (F)
   - Toggle grid when tiles are off (G)
+  - Track summary (I)
+  - Copy view to clipboard (Ctrl+C)
   - Toggle elevation profile (E)
   - Toggle speed profile visibility (V)
   - Toggle slope colouring on track (S)
@@ -124,6 +128,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `showCoords`                | bool   | `1`                                                     | Show latitude, longitude, and track name.                                                                    |
   | `initialZoom`               | int    | `13`                                                    | Default zoom level (3..19).                                                                                  |
   | `showElevationProfile`      | int    | `1`                                                     | Default visibility of the elevation window.                                                                  |
+  | `showSpeedProfile`          | int    | `0`                                                     | Default visibility of the speed profile. Runtime changes made with V or the context menu are saved here.      |
   | `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                           |
   | `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                           |
   | `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                             |
@@ -142,35 +147,37 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `backoffMaxMs`              | int    | `4000`                                                  | Maximum backoff delay for retries.                                                                           |
   | `prefetchRings`             | int    | `2`                                                     | Number of tile rings to pre-load around the view.                                                            |
   | `maxBitmaps`                | int    | `512`                                                   | LRU capacity for in-memory bitmaps.                                                                          |
-  
-  #### 6) Alternative Map Providers
-  
-  The following servers are compatible with the `{z}`, `{x}`, and `{y}` placeholder system. You can switch between your primary and satellite views by configuring these in the INI file.
-  
-  - **OpenStreetMap (Standard)**
-    
-    - `https://tile.openstreetmap.org/{z}/{x}/{y}.png`
-    - **Best for:** General-purpose navigation. It features the most up-to-date community-verified street data, points of interest (POIs), and cycling paths.
-  
-  - **Google Satellite**
-    
-    - `https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}`
-    - **Best for:** Photorealistic terrain analysis. Ideal for identifying physical landmarks, forest density, or specific buildings that are not yet mapped as vectors.
-  
-  - **OpenTopoMap**
-    
-    - `https://a.tile.opentopomap.org/{z}/{x}/{y}.png`
-    - **Best for:** Hiking and outdoor sports. It provides excellent topographic detail, including contour lines (elevation) and hill shading to represent slope steepness.
-  
-  - **Esri World Imagery**
-    
-    - `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`
-    - **Best for:** Professional GIS rendering. Often offers more consistent high-resolution imagery in rural or remote areas compared to consumer-grade providers.
-  
-  - **CartoDB Voyager**
-    
-    - `https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`
-    - **Best for:** Clean presentations. It uses a high-contrast, "noise-free" design that makes the GPX track line stand out as the primary visual element.
+
+#### 6) Supported Map Tile Providers
+
+GPXLister supports raster map tiles that return PNG or JPEG images from a URL template containing `{z}`, `{x}`, and `{y}`. Use `tileEndpoint` for the normal map and `satelliteTileEndpoint` for the alternate map selected with **T**.
+
+Example:
+
+```ini
+tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
+satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+userAgent=GPXLister/2.6
+```
+
+| Provider | INI endpoint example | Pros | Cons and limits |
+| -------- | -------------------- | ---- | --------------- |
+| OpenStreetMap Standard | `tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Best general street map; current OSM road, path, and POI data; no API key. | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
+| OpenTopoMap | `tileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png` | Topographic map with contours and hill shading; lowest-impact way to get cliff/terrain shadowing without code changes. | Third-party service with its own availability and usage expectations; can be slower than commercial CDNs; style is less clean for city navigation. |
+| CARTO Voyager raster | `tileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png` | Clean, high-contrast presentation map; GPX tracks remain easy to see. | Check CARTO terms for redistributed or heavy use; no terrain shadows. |
+| Esri World Imagery | `satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}` | Good satellite/air-photo coverage; useful as the alternate **T** layer. | Uses ArcGIS cached tile order `{z}/{y}/{x}`. Esri requires attribution for Esri and data providers; imagery age and resolution vary by area. |
+| ArcGIS Static Basemap Tiles | `tileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Professional street, outdoor, light, and dark styles. | Requires an ArcGIS token unless authorization headers are used; GPXLister can only pass tokens in the URL. Uses `{z}/{y}/{x}` and 512 px source tiles, so visual scaling may differ. |
+| Thunderforest | `tileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY` | Outdoor, cycle, transport, landscape, and other specialist OSM-derived styles. | Requires an API key and is plan/rate-limit based. See the [Thunderforest tile docs](https://www.thunderforest.com/docs/map-tiles-api/). |
+| Stadia Maps raster | `tileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY` | CDN-backed raster styles, including outdoors and migrated Stamen styles. | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders. |
+| MapTiler raster | `tileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY` | Commercial satellite and map styles with predictable service levels. | Requires a MapTiler API key. Many examples are TileJSON or vector style URLs; GPXLister needs a direct raster tile URL. |
+| Self-hosted XYZ tiles | `tileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png` | Full control; best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade. | You operate storage, rendering, caching, attribution, and uptime. Tiles must use Web Mercator XYZ-compatible coordinates. |
+
+Unsupported or limited cases:
+
+- Vector tiles (`.pbf`), Mapbox/MapLibre style JSON, and TileJSON-only endpoints are not rendered.
+- Provider templates using `{s}`, `{r}`, `{quadkey}`, signed headers, or POST-created sessions are not expanded.
+- Official Google Map Tiles API 2D tiles require a session token created by a POST request and have strict caching/attribution rules, so they are not a simple INI-only provider. Older direct Google tile URLs may work technically, but they are not recommended unless your usage is explicitly allowed by Google terms.
+- Tiles are cached in RAM only. GPXLister is an interactive viewer, not an offline tile downloader.
 
 - ## 7) Troubleshooting
 
@@ -190,23 +197,29 @@ GPXLister can render the track polyline with progressive colouring driven by the
   
   ## Versions
 
+- **v2.6 - Clipboard copy and persistent speed profile**
+
+  - Added **Ctrl+C / Ctrl+Ins / Copy view to clipboard** for the current visible Lister view.
+  - Added the same copy action to the map right-click context menu.
+  - Persisted **V / speed profile** visibility in `showSpeedProfile`.
+
 - **v2.5.1 - Reliable Fit to Window shortcut**
-  
+
   - Fixed unreliable **F / Fit to window** activation in Total Commander by handling its WLX host command path.
   - Preserved matching behavior for the map keyboard shortcut and contextual-menu action.
 
 - **v2.5 - KMZ import support and recompile via VS 2026**
-  
+
   * Added transparent `.kmz` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
-  
+
   * Recompilation via stable VS 2026 to avoid false VirusTotal positive warnings
 
 * **v2.4 - KML import support**
-  
+
   - Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
 
 - **v2.3 - GPX viewing polish**
-  
+
   - Changed **Fit to Window** to the standard **F** shortcut and removed the old X shortcut.
   - Redesigned the **I** information dialog with a DPI-aware card layout and clearer spacing.
   - Fixed summary elapsed time and average speed for patched/multi-track files with large timestamp gaps.

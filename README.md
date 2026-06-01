@@ -4,7 +4,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
-**Latest release:** `v2.5.1` fixes unreliable `F` / **Fit to Window** handling when Total Commander routes the shortcut through the WLX command interface.
+**Latest release:** `v2.6` adds **Copy view to clipboard** for the current Lister view and persists the `V` speed profile setting in `GPXLister.ini`.
 
 ## Key Features
 
@@ -18,6 +18,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 - **Overlay Information**: Real-time display of cursor coordinates and the active track name.
 - **Zero Disk Footprint**: All tile caching and bitmap decoding happen in memory (RAM).
 - **Altitude/Speed Profiles**: Toggle altitude and speed profiles independently; speed uses its own scale and a configurable blue profile colour.
+- **Copy View to Clipboard**: Capture the current visible Lister view as PNG with `Ctrl+C`, `Ctrl+Ins`, the standard Lister copy command, or the map context menu.
 - **Robust Summaries**: The `I` information dialog uses smoothed elevation, robust sustained slope windows, stitched moving time for patched tracks, and a DPI-aware card layout.
 - **Slope-based Track Colouring (optional)**: Progressive colouring of the track polyline based on gradient (slope), designed to remain stable on dense GPX data.
 
@@ -45,9 +46,10 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
   - `M`: Map tiles on/off.
   - `G`: Grid overlay on/off.
   - `E`: Elevation profile on/off.
-  - `V`: Speed profile on/off.
+  - `V`: Speed profile on/off (saved to `showSpeedProfile` in the INI file).
   - `S`: Slope-based track colouring on/off.
 - **Information**: `I` opens the summary dialog.
+- **Copy view**: `Ctrl+C` and `Ctrl+Ins` copy the current visible Lister view to the clipboard as PNG. The same action is available from the map right-click context menu as **Copy view to clipboard (Ctrl+C)**.
 - **Hover**: Move the mouse over the map track or profile to see synchronised crosshairs/position lines.
 
 ## Configuration (`GPXLister.ini`)
@@ -55,6 +57,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 You can place a `GPXLister.ini` file in the same directory as the plugin binaries to customise defaults.
 
 - `showSlopeColouringOnTrack` (int, default `0`): Enables progressive slope-based colouring for the map track polyline.
+- `showSpeedProfile` (int, default `0`): Default speed profile visibility. Runtime changes made with `V` or the map context menu are saved here.
 - `trackLineWidth` (float, default `2.0`): Stroke width for drawing the map track polyline. Values are clamped to a safe range.
 - `speedProfileColor` (string, default `#0059F2`): Speed profile colour as `#RRGGBB`.
 - `fitConverter` (string, default `Fit2Gpx.exe`): Converter executable for `.fit` files. Relative names are searched in the plugin folder first, then in `PATH`.
@@ -65,3 +68,34 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 - `kmlTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
 - When slope colouring is enabled, the gradient is computed from elevation change over distance and mapped to a blue→green→red ramp, then blended with the per-track base colour.
 - Colour changes are computed in distance windows rather than per raw GPX segment to avoid visual noise. Track rendering uses rounded joins/caps to prevent visible seams when colours change.
+
+## Supported Map Tile Providers
+
+GPXLister can use raster web-map tiles that return PNG or JPEG images through a URL template containing `{z}`, `{x}`, and `{y}`. Set the main map with `tileEndpoint=...` and the `T` satellite/alternate map with `satelliteTileEndpoint=...`.
+
+Example:
+
+```ini
+tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
+satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+userAgent=GPXLister/2.6
+```
+
+| Provider                    | INI endpoint example                                                                                                                                                | Pros                                                                                                  | Cons and limits                                                                                                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenStreetMap Standard      | `tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png`                                                                                                       | Best general street map; very current OSM data; no API key.                                           | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
+| OpenTopoMap                 | `tileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png`                                                                                                       | Topographic style with contours and hill shading; good low-impact way to get cliff/terrain shadows.   | Third-party service with its own availability and usage expectations; usually slower than large commercial CDNs; style is less clean for city navigation.                                                   |
+| CARTO Voyager raster        | `tileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`                                                                                  | Clean, readable, high-contrast basemap that keeps GPX tracks visible.                                 | Third-party basemap; check CARTO terms for redistributed or heavy use. No terrain shadows.                                                                                                                  |
+| Esri World Imagery          | `satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`                                               | Good satellite/air-photo coverage; useful as the alternate `T` layer.                                 | Uses ArcGIS cached tile order `{z}/{y}/{x}`. Esri requires correct attribution for Esri and data providers; imagery age and resolution vary by area.                                                        |
+| ArcGIS Static Basemap Tiles | `tileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Many professional street/outdoor/light/dark styles.                                                   | Requires an ArcGIS access token unless you use authorization headers; GPXLister can only place tokens in the URL. Uses `{z}/{y}/{x}` order and 512 px source tiles, so visual scaling may differ.           |
+| Thunderforest               | `tileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY`                                                                               | Outdoor, cycle, transport, landscape, and other OSM-derived specialist styles.                        | Requires an API key and is plan/rate-limit based. Pick styles and limits from the [Thunderforest docs](https://www.thunderforest.com/docs/map-tiles-api/).                                                  |
+| Stadia Maps raster          | `tileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY`                                                                         | CDN-backed raster styles, including outdoors and migrated Stamen styles.                              | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders.                                                                 |
+| MapTiler raster             | `tileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY`                                                                             | Good commercial satellite and map styles; predictable service levels.                                 | Requires a MapTiler API key. Many MapTiler examples are TileJSON/vector-style URLs; GPXLister needs direct raster tile URLs.                                                                                |
+| Self-hosted XYZ tiles       | `tileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png`                                                                                                    | Full control, best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade. | You operate storage, rendering, caching, attribution, and uptime. Must use Web Mercator XYZ-compatible tile coordinates.                                                                                    |
+
+Unsupported or limited cases:
+
+- Vector tiles (`.pbf`, Mapbox/MapLibre style JSON, TileJSON-only endpoints) are not rendered by GPXLister.
+- Provider templates using `{s}`, `{r}`, `{quadkey}`, signed headers, or POST-created sessions are not expanded by GPXLister.
+- Official Google Map Tiles API 2D tiles require a session token created by a POST request and have strict caching/attribution rules, so they are not a simple INI-only provider. Older direct Google tile URLs may work technically, but they are not recommended unless your usage is explicitly allowed by Google terms.
+- GPXLister keeps tiles in RAM only; it is an interactive viewer, not an offline tile downloader.
