@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.6 - Clipboard copy and persistent speed profile
+
+- Added `Ctrl+C`, `Ctrl+Ins`, and standard Lister copy support to copy the current Lister view to the clipboard as PNG, also available from the map context menu.
+- Added persistent `showSpeedProfile` INI storage for the speed profile toggled with `V` or the context menu.
+- Updated distribution metadata to version `2.6`.
+- Changed default tile rendering to opentopomap with hill shadows
+- Added tiles topo map server rendering samples
+
 ## v2.5.1 - Reliable Fit to Window shortcut
 
 - Fixed the `F` shortcut in Total Commander Lister by handling the host-routed fit command through the WLX `ListSendCommand` interface.
