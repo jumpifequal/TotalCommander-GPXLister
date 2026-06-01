@@ -40,20 +40,30 @@ static void ReadStr(const wchar_t* path, const wchar_t* key, const wchar_t* def,
     GetPrivateProfileStringW(L"GPXLister", key, def, out, (DWORD)outc, path);
 }
 
-void LoadOptions(Options& o){
-    // discover INI next to DLL (GPXLister.ini)
+static void GetIniPath(wchar_t* iniPath, size_t iniPathCount) {
+    if (!iniPath || iniPathCount == 0) return;
+    iniPath[0] = L'\0';
+
     wchar_t dllPath[MAX_PATH]; GetModuleFileNameW((HMODULE)&__ImageBase, dllPath, MAX_PATH);
     PathRemoveFileSpecW(dllPath);
-    wchar_t iniPath[MAX_PATH]; lstrcpyW(iniPath, dllPath); PathAppendW(iniPath, L"GPXLister.ini");
+    lstrcpynW(iniPath, dllPath, (int)iniPathCount);
+    PathAppendW(iniPath, L"GPXLister.ini");
     if (GetFileAttributesW(iniPath) == INVALID_FILE_ATTRIBUTES) {
         wchar_t cwdIni[MAX_PATH]{};
         if (GetCurrentDirectoryW(MAX_PATH, cwdIni) > 0) {
             PathAppendW(cwdIni, L"GPXLister.ini");
             if (GetFileAttributesW(cwdIni) != INVALID_FILE_ATTRIBUTES) {
-                lstrcpyW(iniPath, cwdIni);
+                lstrcpynW(iniPath, cwdIni, (int)iniPathCount);
             }
         }
     }
+}
+
+void LoadOptions(Options& o){
+    // discover INI next to DLL (GPXLister.ini)
+    wchar_t iniPath[MAX_PATH];
+    GetIniPath(iniPath, MAX_PATH);
+
     // read values (keep defaults if file missing)
     ReadBool(iniPath, L"useTiles", o.useTiles, o.useTiles);
     ReadBool(iniPath, L"showGridWhenNoTiles", o.showGridWhenNoTiles, o.showGridWhenNoTiles);
@@ -73,6 +83,7 @@ void LoadOptions(Options& o){
     ReadStr(iniPath, L"satelliteTileEndpoint", o.satelliteTileEndpoint, o.satelliteTileEndpoint, 256);
     ReadStr(iniPath, L"userAgent", o.userAgent, o.userAgent, 128);
     ReadBool(iniPath, L"showElevationProfile", o.showElevationProfile, o.showElevationProfile);
+    ReadBool(iniPath, L"showSpeedProfile", o.showSpeedProfile, o.showSpeedProfile);
     ReadBool(iniPath, L"showSlopeColouringOnTrack", o.showSlopeColouringOnTrack, o.showSlopeColouringOnTrack);
     ReadFloat(iniPath, L"trackLineWidth", o.trackLineWidth, o.trackLineWidth);
     ReadStr(iniPath, L"speedProfileColor", o.speedProfileColor, o.speedProfileColor, 16);
@@ -86,4 +97,10 @@ void LoadOptions(Options& o){
     ReadInt(iniPath, L"kmlTimeoutSec", o.kmlTimeoutSec, o.kmlTimeoutSec);
     if (o.kmlTimeoutSec < 1) o.kmlTimeoutSec = 1;
     if (o.kmlTimeoutSec > 3600) o.kmlTimeoutSec = 3600;
+}
+
+void SaveOptionBool(const wchar_t* key, bool value) {
+    wchar_t iniPath[MAX_PATH];
+    GetIniPath(iniPath, MAX_PATH);
+    WritePrivateProfileStringW(L"GPXLister", key, value ? L"1" : L"0", iniPath);
 }

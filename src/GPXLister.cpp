@@ -24,6 +24,7 @@
 #define ID_CTX_TOGGLE_SLOPE_COLOUR  40006 // Toggle slope colouring on track (keyboard: S)
 #define ID_CTX_TOGGLE_SPEED         40007 // Toggle speed profile (keyboard: V)
 #define ID_CTX_SHOW_INFO            40008 // Show track summary dialog (keyboard: I)
+#define ID_CTX_PRINTSCREEN          40009 // Copy current Lister view to clipboard (keyboard: Ctrl+C/Ctrl+Ins)
 
 #define ID_MAX_CYCLING_SPEED        150.0 // km/h - used for speed profile scaling
 
@@ -2752,6 +2753,107 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 }
 
+static bool CopyListerViewToClipboard(State& s) {
+    if (!s.hwnd || !s.wic) return false;
+
+    RECT rc{};
+    if (!GetClientRect(s.hwnd, &rc)) return false;
+
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    if (width <= 0 || height <= 0) return false;
+
+    POINT origin{ 0, 0 };
+    if (!ClientToScreen(s.hwnd, &origin)) return false;
+
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) return false;
+
+    HDC memDc = CreateCompatibleDC(screenDc);
+    if (!memDc) {
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    HBITMAP bitmap = CreateCompatibleBitmap(screenDc, width, height);
+    if (!bitmap) {
+        DeleteDC(memDc);
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+    const BOOL copied = BitBlt(memDc, 0, 0, width, height, screenDc, origin.x, origin.y, SRCCOPY);
+    SelectObject(memDc, oldBitmap);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+
+    if (!copied) {
+        DeleteObject(bitmap);
+        return false;
+    }
+
+    IWICBitmap* wicBitmap = nullptr;
+    HRESULT hr = s.wic->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, &wicBitmap);
+    DeleteObject(bitmap);
+    if (FAILED(hr) || !wicBitmap) return false;
+
+    IStream* stream = nullptr;
+    hr = CreateStreamOnHGlobal(nullptr, FALSE, &stream);
+    if (FAILED(hr) || !stream) {
+        wicBitmap->Release();
+        return false;
+    }
+
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    IPropertyBag2* props = nullptr;
+    HGLOBAL pngData = nullptr;
+
+    hr = s.wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    if (SUCCEEDED(hr)) hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, &props);
+    if (SUCCEEDED(hr)) hr = frame->Initialize(props);
+    if (SUCCEEDED(hr)) hr = frame->SetSize((UINT)width, (UINT)height);
+    if (SUCCEEDED(hr)) {
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+        hr = frame->SetPixelFormat(&format);
+    }
+    if (SUCCEEDED(hr)) hr = frame->WriteSource(wicBitmap, nullptr);
+    if (SUCCEEDED(hr)) hr = frame->Commit();
+    if (SUCCEEDED(hr)) hr = encoder->Commit();
+    if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(stream, &pngData);
+
+    if (props) props->Release();
+    if (frame) frame->Release();
+    if (encoder) encoder->Release();
+    stream->Release();
+    wicBitmap->Release();
+
+    if (FAILED(hr) || !pngData) return false;
+
+    const UINT pngFormat = RegisterClipboardFormatW(L"PNG");
+    if (pngFormat == 0) {
+        GlobalFree(pngData);
+        return false;
+    }
+
+    if (!OpenClipboard(s.hwnd)) {
+        GlobalFree(pngData);
+        return false;
+    }
+
+    EmptyClipboard();
+    if (!SetClipboardData(pngFormat, pngData)) {
+        CloseClipboard();
+        GlobalFree(pngData);
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
+}
+
 static void OnKey(State& s, WPARAM vk) {
     if (vk == 'I' || vk == 'i') { // Track summary dialog
         ShowTrackInfoDialog(s);
@@ -2774,6 +2876,10 @@ static void OnKey(State& s, WPARAM vk) {
         InvalidateRect(s.hwnd, NULL, FALSE);
         return;
     }
+    if ((vk == 'C' || vk == 'c' || vk == VK_INSERT) && (GetKeyState(VK_CONTROL) & 0x8000)) { // Copy current view
+        CopyListerViewToClipboard(s);
+        return;
+    }
     if (vk == 'E' || vk == 'e' || vk == 'A' || vk == 'a') { // Toggle Elevation Profile
         s.showElevationProfile = !s.showElevationProfile;
         InvalidateRect(s.hwnd, NULL, FALSE);
@@ -2781,6 +2887,8 @@ static void OnKey(State& s, WPARAM vk) {
     }
     if (vk == 'V' || vk == 'v') { // Toggle Speed Profile
         s.showSpeedProfile = !s.showSpeedProfile;
+        s.opt.showSpeedProfile = s.showSpeedProfile;
+        SaveOptionBool(L"showSpeedProfile", s.showSpeedProfile);
         InvalidateRect(s.hwnd, NULL, FALSE);
         return;
     }
@@ -2915,6 +3023,7 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     AppendMenuW(hMenu, gridFlags, ID_CTX_TOGGLE_GRID, L"Toggle grid when tiles are off (G)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, ID_CTX_SHOW_INFO, L"Track summary (I)");
+    AppendMenuW(hMenu, MF_STRING, ID_CTX_PRINTSCREEN, L"Copy view to clipboard (Ctrl+C)");
     
     UINT elevationFlags = MF_STRING;
     if (s.showElevationProfile) {
@@ -2975,6 +3084,10 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     }
     if (cmd == ID_CTX_SHOW_INFO) {
         OnKey(s, 'I');
+        return;
+    }
+    if (cmd == ID_CTX_PRINTSCREEN) {
+        CopyListerViewToClipboard(s);
         return;
     }
 }
@@ -3253,6 +3366,7 @@ static HWND DoLoad(HWND ParentWin, const wchar_t* path, const wchar_t* displayPa
     }
 
     s->showElevationProfile = s->opt.showElevationProfile; // Initialise the elevation profile flag
+    s->showSpeedProfile = s->opt.showSpeedProfile; // Initialise the speed profile flag
     s->showSlopeColouringOnTrack = s->opt.showSlopeColouringOnTrack; // Initialise slope colouring flag
     s->trackLineWidth = s->opt.trackLineWidth; // Initialise track stroke width
 
@@ -3396,11 +3510,17 @@ void WINAPI ListGetDetectString(char* DetectString, int maxlen) {
     }
 }
 
-int WINAPI ListSendCommand(HWND ListWin, int Command, int) {
+int WINAPI ListSendCommand(HWND ListWin, int Command, int Parameter) {
     auto s = reinterpret_cast<State*>(GetWindowLongPtrW(ListWin, GWLP_USERDATA));
     if (!s) return LISTPLUGIN_ERROR;
 
-    if (Command == lc_newparams) {
+    if (Command == lc_copy) {
+        CopyListerViewToClipboard(*s);
+        SetFocus(ListWin);
+        return LISTPLUGIN_OK;
+    }
+
+    if (Command == lc_newparams && (Parameter & lcp_fittowindow) != 0) {
         // Total Commander routes its F shortcut here as a toggled image-view option.
         // For a map view, fit is an action: both toggle directions should re-fit.
         FitToWindow(*s);

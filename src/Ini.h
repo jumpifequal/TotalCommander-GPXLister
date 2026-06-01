@@ -26,6 +26,7 @@ struct Options {
     int backoffStartMs = 500;
     int backoffMaxMs = 4000;
     bool showElevationProfile = true;
+    bool showSpeedProfile = false;
     bool showSlopeColouringOnTrack = false; // Progressive slope colouring for the map track polyline.
     float trackLineWidth = 2.0f; // Stroke width for drawing the track polyline on the map.
     wchar_t speedProfileColor[16] = L"#0059F2"; // Speed profile colour as #RRGGBB.
@@ -38,4 +39,5 @@ struct Options {
 };
 
 void LoadOptions(Options& o);
+void SaveOptionBool(const wchar_t* key, bool value);
 #endif
