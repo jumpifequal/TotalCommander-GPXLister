@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.7 - Configurable map styles
+
+- Added `mapTypeOrder` to control the startup map style, the `T` keyboard cycle, and the map context-menu order.
+- Added named map style endpoints: `standardTileEndpoint`, `satelliteTileEndpoint`, and `topoTileEndpoint`.
+- Replaced the context-menu tile-server toggle with a **Map style** submenu for direct style selection.
+- Added **Add track file...** to append GPX/FIT/KML/KMZ files temporarily to the current view using the existing multi-track sidebar.
+- Fixed tile-cache worker state so WinINet download handles remain thread-local during parallel tile downloads.
+- Preserved legacy `tileEndpoint` as the old alias for the standard map style.
+- Added safe `mapTypeOrder` repair for unknown, duplicate, empty, and backward-compatible `standard`-only configurations.
+- Updated distribution metadata to version `2.7`.
+
 ## v2.6 - Clipboard copy and persistent speed profile
 
 - Added `Ctrl+C`, `Ctrl+Ins`, and standard Lister copy support to copy the current Lister view to the clipboard as PNG, also available from the map context menu.

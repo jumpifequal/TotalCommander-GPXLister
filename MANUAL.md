@@ -12,7 +12,7 @@
 
 - **Visual Rendering:** Displays GPX **tracks** (`trk`/`trkseg`/`trkpt`) with anti-aliased lines and elevation profiles. Waypoints and multiple tracks GPX are supported 
 - **Map Background:** Uses Slippy Map tiles (OpenStreetMap by default) with an automatic fallback to a cartographic grid when offline.
-- **Satellite Toggle:** Quickly switch between standard map tiles and satellite imagery.
+- **Map Style Cycle:** Quickly switch between configured map styles, or select a specific style from the map context menu.
 - **Multi-Track Support:** Handles files with multiple tracks using a selectable and **resizable lateral sidebar**.
 - **Performance:** Capable of rendering large GPX files (100,000+ points) smoothly without blocking the UI.
 - **Zero Disk Footprint:** All tiles and bitmaps are managed in RAM; no temporary files are written to disk.
@@ -57,7 +57,7 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 
 - **M/m**— Toggle **map tiles** on/off.
 
-- **T / t** — Toggle **Satellite Mode** (switches between standard and satellite tile servers).
+- **T / t** — Cycle through the configured map styles from `mapTypeOrder`.
 
 - **G/g** — Toggle **grid overlay** on/off.
 
@@ -82,9 +82,10 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 - **Right-click (map view)** - Open a context menu with direct access to existing actions.
   
   - Toggle tiles (M)
-  - Toggle tile server (T)
+  - Map style submenu (uses `mapTypeOrder`)
   - Fit to window (F)
   - Toggle grid when tiles are off (G)
+  - Add track file...
   - Track summary (I)
   - Copy view to clipboard (Ctrl+C)
   - Toggle elevation profile (E)
@@ -117,85 +118,100 @@ GPXLister can render the track polyline with progressive colouring driven by the
 - **Noise control:** The colour is updated in distance windows (not on every raw GPX segment). The window length is adaptive, using longer windows on near-flat sections and shorter windows on steeper sections, while staying above GPX noise.
 
 - **Rendering quality:** Track stroke uses rounded joins and caps to avoid visible seams when colours change between windows.
-  
-  ## 5) INI Configuration (`GPXLister.ini`)
-  
-  | Key                         | Type   | Default                                                 | Description                                                                                                  |
-  | --------------------------- | ------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-  | `useTiles`                  | bool   | `1`                                                     | Enable map tile background.                                                                                  |
-  | `showGridWhenNoTiles`       | bool   | `1`                                                     | Draw grid lines when tiles are unavailable.                                                                  |
-  | `showScale`                 | bool   | `1`                                                     | Show the dynamic scale bar.                                                                                  |
-  | `showCoords`                | bool   | `1`                                                     | Show latitude, longitude, and track name.                                                                    |
-  | `initialZoom`               | int    | `13`                                                    | Default zoom level (3..19).                                                                                  |
-  | `showElevationProfile`      | int    | `1`                                                     | Default visibility of the elevation window.                                                                  |
-  | `showSpeedProfile`          | int    | `0`                                                     | Default visibility of the speed profile. Runtime changes made with V or the context menu are saved here.      |
-  | `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                           |
-  | `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                           |
-  | `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                             |
-  | `fitConverter`              | string | `Fit2Gpx.exe`                                           | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`.           |
-  | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                            |
-  | `fitTimeoutSec`             | int    | `60`                                                    | Maximum FIT conversion time before the converter is terminated and an error is shown.                        |
-  | `kmlConverter`              | string | `kml2gpx.exe`                                           | Converter executable for `.kml` and `.kmz` files. Relative names search the plugin folder first, then `PATH`. |
-  | `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                            |
-  | `kmlTimeoutSec`             | int    | `60`                                                    | Maximum KML/KMZ conversion time before the converter is terminated and an error is shown.                    |
-  | `tileEndpoint`              | string | `OSM URL`                                               | Standard Slippy URL template ({z}, {x}, {y}).                                                                |
-  | `satelliteTileEndpoint`     | string | `Google Sat`                                            | URL template used when Satellite Mode is toggled. Same standard of tileEndpoint                              |
-  | `userAgent`                 | string | `GPXLister`                                             | HTTP User-Agent for requests.                                                                                |
-  | `workers`                   | int    | `4`                                                     | Concurrent download threads (1..8).                                                                          |
-  | `requestDelayMs`            | int    | `75`                                                    | Base inter-request delay (throttling).                                                                       |
-  | `backoffStartMs`            | int    | `500`                                                   | Initial exponential backoff after network errors.                                                            |
-  | `backoffMaxMs`              | int    | `4000`                                                  | Maximum backoff delay for retries.                                                                           |
-  | `prefetchRings`             | int    | `2`                                                     | Number of tile rings to pre-load around the view.                                                            |
-  | `maxBitmaps`                | int    | `512`                                                   | LRU capacity for in-memory bitmaps.                                                                          |
 
-#### 6) Supported Map Tile Providers
+## 5) INI Configuration (`GPXLister.ini`)
 
-GPXLister supports raster map tiles that return PNG or JPEG images from a URL template containing `{z}`, `{x}`, and `{y}`. Use `tileEndpoint` for the normal map and `satelliteTileEndpoint` for the alternate map selected with **T**.
+  | Key                         | Type   | Default                                                 | Description                                                                                                    |
+  | --------------------------- | ------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+  | `useTiles`                  | bool   | `1`                                                     | Enable map tile background.                                                                                    |
+  | `showGridWhenNoTiles`       | bool   | `1`                                                     | Draw grid lines when tiles are unavailable.                                                                    |
+  | `showScale`                 | bool   | `1`                                                     | Show the dynamic scale bar.                                                                                    |
+  | `showCoords`                | bool   | `1`                                                     | Show latitude, longitude, and track name.                                                                      |
+  | `initialZoom`               | int    | `13`                                                    | Default zoom level (3..19).                                                                                    |
+  | `showElevationProfile`      | int    | `1`                                                     | Default visibility of the elevation window.                                                                    |
+  | `showSpeedProfile`          | int    | `0`                                                     | Default visibility of the speed profile. Runtime changes made with V or the context menu are saved here.       |
+  | `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                             |
+  | `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                             |
+  | `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                               |
+  | `fitConverter`              | string | `Fit2Gpx.exe`                                           | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`.             |
+  | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
+  | `fitTimeoutSec`             | int    | `60`                                                    | Maximum FIT conversion time before the converter is terminated and an error is shown.                          |
+  | `kmlConverter`              | string | `kml2gpx.exe`                                           | Converter executable for `.kml` and `.kmz` files. Relative names search the plugin folder first, then `PATH`.  |
+  | `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
+  | `kmlTimeoutSec`             | int    | `60`                                                    | Maximum KML/KMZ conversion time before the converter is terminated and an error is shown.                      |
+  | `mapTypeOrder`              | string | `standard,satellite,topo`                               | Startup, keyboard-cycle, and context-menu order for map styles. Valid values: `standard`, `satellite`, `topo`. |
+  | `standardTileEndpoint`      | string | `OSM URL`                                               | URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.                  |
+  | `satelliteTileEndpoint`     | string | `Google Sat`                                            | URL template for the satellite map style.                                                                      |
+  | `topoTileEndpoint`          | string | `OpenTopoMap URL`                                       | URL template for the topo map style.                                                                           |
+  | `userAgent`                 | string | `GPXLister`                                             | HTTP User-Agent for requests.                                                                                  |
+  | `workers`                   | int    | `4`                                                     | Concurrent download threads (1..8).                                                                            |
+  | `requestDelayMs`            | int    | `75`                                                    | Base inter-request delay (throttling).                                                                         |
+  | `backoffStartMs`            | int    | `500`                                                   | Initial exponential backoff after network errors.                                                              |
+  | `backoffMaxMs`              | int    | `4000`                                                  | Maximum backoff delay for retries.                                                                             |
+  | `prefetchRings`             | int    | `2`                                                     | Number of tile rings to pre-load around the view.                                                              |
+  | `maxBitmaps`                | int    | `512`                                                   | LRU capacity for in-memory bitmaps.                                                                            |
+
+## 6) Supported Map Tile Providers
+
+GPXLister supports raster map tiles that return PNG or JPEG images from a URL template containing `{z}`, `{x}`, and `{y}`. Use `mapTypeOrder` to choose the startup, keyboard-cycle, and context-menu order for `standard`, `satellite`, and `topo`. Unknown values are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
 
 Example:
 
 ```ini
-tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
+mapTypeOrder=standard,satellite,topo
+standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
-userAgent=GPXLister/2.6
+topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
+userAgent=GPXLister/2.7
 ```
 
-| Provider | INI endpoint example | Pros | Cons and limits |
-| -------- | -------------------- | ---- | --------------- |
-| OpenStreetMap Standard | `tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Best general street map; current OSM road, path, and POI data; no API key. | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
-| OpenTopoMap | `tileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png` | Topographic map with contours and hill shading; lowest-impact way to get cliff/terrain shadowing without code changes. | Third-party service with its own availability and usage expectations; can be slower than commercial CDNs; style is less clean for city navigation. |
-| CARTO Voyager raster | `tileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png` | Clean, high-contrast presentation map; GPX tracks remain easy to see. | Check CARTO terms for redistributed or heavy use; no terrain shadows. |
-| Esri World Imagery | `satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}` | Good satellite/air-photo coverage; useful as the alternate **T** layer. | Uses ArcGIS cached tile order `{z}/{y}/{x}`. Esri requires attribution for Esri and data providers; imagery age and resolution vary by area. |
-| ArcGIS Static Basemap Tiles | `tileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Professional street, outdoor, light, and dark styles. | Requires an ArcGIS token unless authorization headers are used; GPXLister can only pass tokens in the URL. Uses `{z}/{y}/{x}` and 512 px source tiles, so visual scaling may differ. |
-| Thunderforest | `tileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY` | Outdoor, cycle, transport, landscape, and other specialist OSM-derived styles. | Requires an API key and is plan/rate-limit based. See the [Thunderforest tile docs](https://www.thunderforest.com/docs/map-tiles-api/). |
-| Stadia Maps raster | `tileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY` | CDN-backed raster styles, including outdoors and migrated Stamen styles. | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders. |
-| MapTiler raster | `tileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY` | Commercial satellite and map styles with predictable service levels. | Requires a MapTiler API key. Many examples are TileJSON or vector style URLs; GPXLister needs a direct raster tile URL. |
-| Self-hosted XYZ tiles | `tileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png` | Full control; best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade. | You operate storage, rendering, caching, attribution, and uptime. Tiles must use Web Mercator XYZ-compatible coordinates. |
+| Provider                    | INI endpoint example                                                                                                                                                        | Pros                                                                                                                   | Cons and limits                                                                                                                                                                                             |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenStreetMap Standard      | `standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png`                                                                                                       | Best general street map; current OSM road, path, and POI data; no API key.                                             | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
+| OpenTopoMap                 | `topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png`                                                                                                           | Topographic map with contours and hill shading; lowest-impact way to get cliff/terrain shadowing without code changes. | Third-party service with its own availability and usage expectations; can be slower than commercial CDNs; style is less clean for city navigation.                                                          |
+| CARTO Voyager raster        | `standardTileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`                                                                                  | Clean, high-contrast presentation map; GPX tracks remain easy to see.                                                  | Check CARTO terms for redistributed or heavy use; no terrain shadows.                                                                                                                                       |
+| Esri World Imagery          | `satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`                                                       | Good satellite/air-photo coverage; useful as the alternate **T** layer.                                                | Uses ArcGIS cached tile order `{z}/{y}/{x}`. Esri requires attribution for Esri and data providers; imagery age and resolution vary by area.                                                                |
+| ArcGIS Static Basemap Tiles | `standardTileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Professional street, outdoor, light, and dark styles.                                                                  | Requires an ArcGIS token unless authorization headers are used; GPXLister can only pass tokens in the URL. Uses `{z}/{y}/{x}` and 512 px source tiles, so visual scaling may differ.                        |
+| Thunderforest               | `topoTileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY`                                                                                   | Outdoor, cycle, transport, landscape, and other specialist OSM-derived styles.                                         | Requires an API key and is plan/rate-limit based. See the [Thunderforest tile docs](https://www.thunderforest.com/docs/map-tiles-api/).                                                                     |
+| Stadia Maps raster          | `topoTileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY`                                                                             | CDN-backed raster styles, including outdoors and migrated Stamen styles.                                               | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders.                                                                 |
+| MapTiler raster             | `satelliteTileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY`                                                                            | Commercial satellite and map styles with predictable service levels.                                                   | Requires a MapTiler API key. Many examples are TileJSON or vector style URLs; GPXLister needs a direct raster tile URL.                                                                                     |
+| Self-hosted XYZ tiles       | `standardTileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png`                                                                                                    | Full control; best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade.                  | You operate storage, rendering, caching, attribution, and uptime. Tiles must use Web Mercator XYZ-compatible coordinates.                                                                                   |
 
 Unsupported or limited cases:
 
 - Vector tiles (`.pbf`), Mapbox/MapLibre style JSON, and TileJSON-only endpoints are not rendered.
+
 - Provider templates using `{s}`, `{r}`, `{quadkey}`, signed headers, or POST-created sessions are not expanded.
+
 - Official Google Map Tiles API 2D tiles require a session token created by a POST request and have strict caching/attribution rules, so they are not a simple INI-only provider. Older direct Google tile URLs may work technically, but they are not recommended unless your usage is explicitly allowed by Google terms.
+
 - Tiles are cached in RAM only. GPXLister is an interactive viewer, not an offline tile downloader.
 
-- ## 7) Troubleshooting
+## 7) Troubleshooting
 
 - **Blank background:** Verify internet connectivity and ensure map tiles are enabled (**M** key).
 
 - **Fit not working:** Ensure a track is actually selected. Press **F** to recentre the view.
 
 - **Slow loading:** Increase the number of `workers` or `prefetchRings` in the INI file if your connection permits.
-  
-  ## 8) License & Attribution
+
+## 8) License & Attribution
 
 - Map data © **OpenStreetMap contributors**.
 
 - Developed utilising Windows **Direct2D**, **WIC**, and **WinINet** APIs.
 
 - Largely coded via Gemini Pro.
-  
-  ## Versions
+
+## Versions
+
+- **v2.7 - Configurable map styles**
+
+  - Added `mapTypeOrder` to control startup map style, keyboard cycle order, and context-menu order.
+  - Added standard, satellite, and topo map style slots with `standardTileEndpoint`, `satelliteTileEndpoint`, and `topoTileEndpoint`.
+  - Replaced the old context-menu tile-server toggle with a **Map style** submenu for direct style selection.
+  - Added **Add track file...** to append GPX/FIT/KML/KMZ files temporarily to the current view.
+  - Added safe repair for invalid or duplicate `mapTypeOrder` values, while preserving legacy `tileEndpoint` compatibility.
 
 - **v2.6 - Clipboard copy and persistent speed profile**
 
@@ -213,11 +229,9 @@ Unsupported or limited cases:
   * Added transparent `.kmz` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
 
   * Recompilation via stable VS 2026 to avoid false VirusTotal positive warnings
-
 * **v2.4 - KML import support**
 
   - Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
-
 - **v2.3 - GPX viewing polish**
 
   - Changed **Fit to Window** to the standard **F** shortcut and removed the old X shortcut.

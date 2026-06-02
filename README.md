@@ -4,16 +4,17 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
-**Latest release:** `v2.6` adds **Copy view to clipboard** for the current Lister view and persists the `V` speed profile setting in `GPXLister.ini`.
+**Latest release:** `v2.7` adds configurable map style order, standard/satellite/topo cycling, direct map-style selection, and temporary track-file append from the map context menu.
 
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
 - **FIT Support**: `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **KML/KMZ Support**: `.kml` and `.kmz` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
-- **Satellite Mode Toggle**: Instantly switch between map providers (e.g., OSM to Google Satellite) using the `T` key.
+- **Map Style Cycle**: Switch between configured map styles with the `T` key, or choose a style directly from the map context menu.
 - **Asynchronous Tiles**: PNG tiles are handled via **WIC** and drawn as D2D bitmaps; background loading ensures the UI remains responsive.
 - **Multi-Track Support**: Full support for GPX files with multiple tracks, including individual track names and colours.
+- **Temporary Track Append**: Add extra GPX/FIT/KML/KMZ files to the current view from the map context menu.
 - **Resizable Sidebar**: A lateral panel allows for easy track selection; resize the panel by dragging its right boundary.
 - **Overlay Information**: Real-time display of cursor coordinates and the active track name.
 - **Zero Disk Footprint**: All tile caching and bitmap decoding happen in memory (RAM).
@@ -42,13 +43,14 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 - **Fit to Window**: Press `F` or **Double-click** (fits the selected track or all tracks; `F` is handled reliably through Total Commander's Lister command path).
 - **Sidebar**: Drag the right edge to resize; select tracks to filter the view.
 - **Toggles**:
-  - `T`: Satellite Mode on/off (switches between tile servers).
+  - `T`: Cycle through the configured map styles from `mapTypeOrder`.
   - `M`: Map tiles on/off.
   - `G`: Grid overlay on/off.
   - `E`: Elevation profile on/off.
   - `V`: Speed profile on/off (saved to `showSpeedProfile` in the INI file).
   - `S`: Slope-based track colouring on/off.
 - **Information**: `I` opens the summary dialog.
+- **Map context menu**: right-click the map to choose the map style, add extra track files, fit the view, toggle overlays, open the track summary, or copy the view to the clipboard.
 - **Copy view**: `Ctrl+C` and `Ctrl+Ins` copy the current visible Lister view to the clipboard as PNG. The same action is available from the map right-click context menu as **Copy view to clipboard (Ctrl+C)**.
 - **Hover**: Move the mouse over the map track or profile to see synchronised crosshairs/position lines.
 
@@ -60,6 +62,10 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 - `showSpeedProfile` (int, default `0`): Default speed profile visibility. Runtime changes made with `V` or the map context menu are saved here.
 - `trackLineWidth` (float, default `2.0`): Stroke width for drawing the map track polyline. Values are clamped to a safe range.
 - `speedProfileColor` (string, default `#0059F2`): Speed profile colour as `#RRGGBB`.
+- `mapTypeOrder` (string, default `standard,satellite,topo`): Display and cycle order for map styles. Valid values are `standard`, `satellite`, and `topo`.
+- `standardTileEndpoint` (string, default OpenStreetMap): URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.
+- `satelliteTileEndpoint` (string, default Google satellite): URL template for the satellite map style.
+- `topoTileEndpoint` (string, default OpenTopoMap): URL template for the topo map style.
 - `fitConverter` (string, default `Fit2Gpx.exe`): Converter executable for `.fit` files. Relative names are searched in the plugin folder first, then in `PATH`.
 - `fitArgs` (string, default `{input} {output} --elevation-dataset srtm30m,eudem25m`): Fit2Gpx command-line template. Supported placeholders are `{converter}`, `{input}`, and `{output}`.
 - `fitTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
@@ -71,27 +77,29 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 
 ## Supported Map Tile Providers
 
-GPXLister can use raster web-map tiles that return PNG or JPEG images through a URL template containing `{z}`, `{x}`, and `{y}`. Set the main map with `tileEndpoint=...` and the `T` satellite/alternate map with `satelliteTileEndpoint=...`.
+GPXLister can use raster web-map tiles that return PNG or JPEG images through a URL template containing `{z}`, `{x}`, and `{y}`. The `T` key cycles through the valid styles in `mapTypeOrder`; the map context menu offers the same styles for direct selection. Unknown map types are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
 
 Example:
 
 ```ini
-tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
+mapTypeOrder=standard,satellite,topo
+standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
-userAgent=GPXLister/2.6
+topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
+userAgent=GPXLister/2.7
 ```
 
 | Provider                    | INI endpoint example                                                                                                                                                | Pros                                                                                                  | Cons and limits                                                                                                                                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenStreetMap Standard      | `tileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png`                                                                                                       | Best general street map; very current OSM data; no API key.                                           | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
-| OpenTopoMap                 | `tileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png`                                                                                                       | Topographic style with contours and hill shading; good low-impact way to get cliff/terrain shadows.   | Third-party service with its own availability and usage expectations; usually slower than large commercial CDNs; style is less clean for city navigation.                                                   |
-| CARTO Voyager raster        | `tileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`                                                                                  | Clean, readable, high-contrast basemap that keeps GPX tracks visible.                                 | Third-party basemap; check CARTO terms for redistributed or heavy use. No terrain shadows.                                                                                                                  |
+| OpenStreetMap Standard      | `standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png`                                                                                               | Best general street map; very current OSM data; no API key.                                           | Community-funded service with a strict [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Use a stable `userAgent`, avoid bulk/offline downloading, and keep request volume modest. |
+| OpenTopoMap                 | `topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png`                                                                                                   | Topographic style with contours and hill shading; good low-impact way to get cliff/terrain shadows.   | Third-party service with its own availability and usage expectations; usually slower than large commercial CDNs; style is less clean for city navigation.                                                   |
+| CARTO Voyager raster        | `standardTileEndpoint=https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`                                                                          | Clean, readable, high-contrast basemap that keeps GPX tracks visible.                                 | Third-party basemap; check CARTO terms for redistributed or heavy use. No terrain shadows.                                                                                                                  |
 | Esri World Imagery          | `satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`                                               | Good satellite/air-photo coverage; useful as the alternate `T` layer.                                 | Uses ArcGIS cached tile order `{z}/{y}/{x}`. Esri requires correct attribution for Esri and data providers; imagery age and resolution vary by area.                                                        |
-| ArcGIS Static Basemap Tiles | `tileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Many professional street/outdoor/light/dark styles.                                                   | Requires an ArcGIS access token unless you use authorization headers; GPXLister can only place tokens in the URL. Uses `{z}/{y}/{x}` order and 512 px source tiles, so visual scaling may differ.           |
-| Thunderforest               | `tileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY`                                                                               | Outdoor, cycle, transport, landscape, and other OSM-derived specialist styles.                        | Requires an API key and is plan/rate-limit based. Pick styles and limits from the [Thunderforest docs](https://www.thunderforest.com/docs/map-tiles-api/).                                                  |
-| Stadia Maps raster          | `tileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY`                                                                         | CDN-backed raster styles, including outdoors and migrated Stamen styles.                              | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders.                                                                 |
-| MapTiler raster             | `tileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY`                                                                             | Good commercial satellite and map styles; predictable service levels.                                 | Requires a MapTiler API key. Many MapTiler examples are TileJSON/vector-style URLs; GPXLister needs direct raster tile URLs.                                                                                |
-| Self-hosted XYZ tiles       | `tileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png`                                                                                                    | Full control, best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade. | You operate storage, rendering, caching, attribution, and uptime. Must use Web Mercator XYZ-compatible tile coordinates.                                                                                    |
+| ArcGIS Static Basemap Tiles | `standardTileEndpoint=https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/outdoor/static/tile/{z}/{y}/{x}?token=YOUR_TOKEN` | Many professional street/outdoor/light/dark styles.                                                   | Requires an ArcGIS access token unless you use authorization headers; GPXLister can only place tokens in the URL. Uses `{z}/{y}/{x}` order and 512 px source tiles, so visual scaling may differ.           |
+| Thunderforest               | `topoTileEndpoint=https://api.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_KEY`                                                                           | Outdoor, cycle, transport, and landscape styles.                                                      | Requires an API key and is plan/rate-limit based. Pick styles and limits from the [Thunderforest docs](https://www.thunderforest.com/docs/map-tiles-api/).                                                  |
+| Stadia Maps raster          | `topoTileEndpoint=https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png?api_key=YOUR_KEY`                                                                     | CDN-backed raster styles, including outdoors and migrated Stamen styles.                              | Usually requires domain auth or an API key outside localhost; max zoom depends on style. Use the 256 px URL, not `{r}` retina placeholders.                                                                 |
+| MapTiler raster             | `satelliteTileEndpoint=https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY`                                                                    | Good commercial satellite and map styles; predictable service levels.                                 | Requires a MapTiler API key. Many MapTiler examples are TileJSON/vector-style URLs; GPXLister needs direct raster tile URLs.                                                                                |
+| Self-hosted XYZ tiles       | `standardTileEndpoint=https://your-server.example/tiles/{z}/{x}/{y}.png`                                                                                            | Full control, best for offline/private/high-volume use, custom styles, or pre-rendered DEM hillshade. | You operate storage, rendering, caching, attribution, and uptime. Must use Web Mercator XYZ-compatible tile coordinates.                                                                                    |
 
 Unsupported or limited cases:
 
