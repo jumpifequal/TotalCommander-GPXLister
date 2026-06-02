@@ -10,7 +10,6 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
-#include <wininet.h>
 
 struct TileKey{ int z=0,x=0,y=0; };
 inline bool operator==(const TileKey&a,const TileKey&b){return a.z==b.z&&a.x==b.x&&a.y==b.y;}
@@ -62,8 +61,6 @@ private:
     IWICImagingFactory* _wic=nullptr;
     ID2D1HwndRenderTarget* _rt=nullptr;
     HWND _notifyHwnd=nullptr; UINT _notifyMsg=0;
-
-    HINTERNET _hInternet = NULL;
 
     bool Download(const std::wstring& url, std::vector<BYTE>& out);
     std::wstring MakeUrl(const TileKey& k) const;

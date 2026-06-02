@@ -16,8 +16,17 @@ struct Options {
 	//default value for tileEndpoint
     wchar_t tileEndpoint[256] = L"https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
+    //default value for standardTileEndpoint
+    wchar_t standardTileEndpoint[256] = L"https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+
 	//default value for satelliteTileEndpoint
     wchar_t satelliteTileEndpoint[256] = L"https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}";
+
+    //default value for topoTileEndpoint
+    wchar_t topoTileEndpoint[256] = L"https://a.tile.opentopomap.org/{z}/{x}/{y}.png";
+
+    wchar_t mapTypeOrder[128] = L"standard,satellite,topo";
+    bool hasMapTypeOrder = false;
     
 	//default user agent
     wchar_t userAgent[128] = L"GPXLister";
@@ -40,4 +49,5 @@ struct Options {
 
 void LoadOptions(Options& o);
 void SaveOptionBool(const wchar_t* key, bool value);
+void SaveOptionString(const wchar_t* key, const wchar_t* value);
 #endif

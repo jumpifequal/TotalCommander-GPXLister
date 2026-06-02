@@ -3,11 +3,14 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wincodec.h>
+#include <commdlg.h>
 #include <commctrl.h>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cwctype>
+#include <iterator>
 #include <mutex> // Added for std::call_once (DPI Fix)
 #include <string>
 #include <shlwapi.h>
@@ -17,7 +20,6 @@
 
 // Context menu command identifiers. Each constant is commented for traceability.
 #define ID_CTX_TOGGLE_TILES         40001 // Toggle tile rendering (keyboard: M)
-#define ID_CTX_TOGGLE_SERVER        40002 // Toggle tile server (keyboard: T)
 #define ID_CTX_FIT_TO_WINDOW        40003 // Fit selected/all tracks to window (keyboard: F)
 #define ID_CTX_TOGGLE_GRID          40004 // Toggle grid when tiles are disabled (keyboard: G)
 #define ID_CTX_TOGGLE_ELEVATION     40005 // Toggle elevation profile (keyboard: E)
@@ -25,6 +27,8 @@
 #define ID_CTX_TOGGLE_SPEED         40007 // Toggle speed profile (keyboard: V)
 #define ID_CTX_SHOW_INFO            40008 // Show track summary dialog (keyboard: I)
 #define ID_CTX_PRINTSCREEN          40009 // Copy current Lister view to clipboard (keyboard: Ctrl+C/Ctrl+Ins)
+#define ID_CTX_ADD_TRACK_FILE       40010 // Append additional GPX/FIT/KML/KMZ files to this temporary view
+#define ID_CTX_MAP_STYLE_BASE       40100 // First dynamic map style command identifier
 
 #define ID_MAX_CYCLING_SPEED        150.0 // km/h - used for speed profile scaling
 
@@ -307,6 +311,143 @@ struct Track {
     TrackStats stats;
 };
 
+struct MapTypeDef {
+    const wchar_t* id;
+    const wchar_t* label;
+};
+
+static const MapTypeDef kMapTypes[] = {
+    { L"standard", L"Standard" },
+    { L"satellite", L"Satellite" },
+    { L"topo", L"Topo" },
+};
+
+static std::wstring TrimLower(std::wstring s) {
+    const size_t first = s.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return L"";
+    const size_t last = s.find_last_not_of(L" \t\r\n");
+    s = s.substr(first, last - first + 1);
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
+        return (wchar_t)towlower(ch);
+    });
+    return s;
+}
+
+static bool IsKnownMapType(const std::wstring& id) {
+    for (const auto& type : kMapTypes) {
+        if (id == type.id) return true;
+    }
+    return false;
+}
+
+static const wchar_t* MapTypeLabel(const std::wstring& id) {
+    for (const auto& type : kMapTypes) {
+        if (id == type.id) return type.label;
+    }
+    return id.c_str();
+}
+
+static const wchar_t* MapTypeEndpoint(const Options& opt, const std::wstring& id) {
+    if (id == L"satellite") return opt.satelliteTileEndpoint;
+    if (id == L"topo") return opt.topoTileEndpoint;
+    return opt.standardTileEndpoint;
+}
+
+static std::wstring JoinMapTypeOrder(const std::vector<std::wstring>& order) {
+    std::wstring text;
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (i > 0) text += L",";
+        text += order[i];
+    }
+    return text;
+}
+
+static void DebugMapConfig(const std::wstring& msg) {
+    OutputDebugStringW((L"[GPXLister] " + msg + L"\n").c_str());
+}
+
+static std::vector<std::wstring> SplitMapTypeOrder(const wchar_t* text) {
+    std::vector<std::wstring> parts;
+    std::wstring raw = text ? text : L"";
+    size_t start = 0;
+    while (start <= raw.size()) {
+        const size_t comma = raw.find(L',', start);
+        const size_t len = (comma == std::wstring::npos) ? std::wstring::npos : comma - start;
+        parts.push_back(TrimLower(raw.substr(start, len)));
+        if (comma == std::wstring::npos) break;
+        start = comma + 1;
+    }
+    return parts;
+}
+
+struct MapOrderValidation {
+    std::vector<std::wstring> order;
+    std::wstring warning;
+};
+
+static MapOrderValidation ValidateMapTypeOrder(const Options& opt) {
+    static const std::vector<std::wstring> fallback = { L"standard", L"satellite", L"topo" };
+    MapOrderValidation result;
+
+    if (!opt.hasMapTypeOrder) {
+        result.order = fallback;
+        return result;
+    }
+
+    std::vector<std::wstring> unknown;
+    bool repaired = false;
+    for (const auto& token : SplitMapTypeOrder(opt.mapTypeOrder)) {
+        if (token.empty()) {
+            repaired = true;
+            continue;
+        }
+        if (!IsKnownMapType(token)) {
+            unknown.push_back(token);
+            DebugMapConfig(L"Unknown map type ignored in mapTypeOrder: " + token);
+            repaired = true;
+            continue;
+        }
+        if (std::find(result.order.begin(), result.order.end(), token) != result.order.end()) {
+            DebugMapConfig(L"Duplicate map type ignored in mapTypeOrder: " + token);
+            repaired = true;
+            continue;
+        }
+        result.order.push_back(token);
+    }
+
+    if (result.order.empty()) {
+        result.order = fallback;
+        repaired = true;
+        result.warning = L"GPXLister ignored invalid mapTypeOrder values in GPXLister.ini.\n\n"
+                         L"Using fallback map order:\nstandard,satellite,topo";
+        DebugMapConfig(L"mapTypeOrder had no valid map types. Using fallback: standard,satellite,topo");
+    }
+
+    if (result.order.size() == 1 && result.order[0] == L"standard") {
+        result.order.push_back(L"satellite");
+        repaired = true;
+        DebugMapConfig(L"mapTypeOrder=standard expanded to standard,satellite for backward compatibility.");
+    }
+
+    if (!result.order.empty() && unknown.size() > 0) {
+        result.warning = L"GPXLister ignored unknown map type(s) in GPXLister.ini:\n";
+        for (const auto& value : unknown) {
+            result.warning += L"\n";
+            result.warning += value;
+        }
+        result.warning += L"\n\nValid map types are:\nstandard, satellite, topo\n\n";
+        result.warning += L"Repaired mapTypeOrder:\n" + JoinMapTypeOrder(result.order);
+    }
+
+    if (repaired) {
+        const std::wstring repairedOrder = JoinMapTypeOrder(result.order);
+        SaveOptionString(L"mapTypeOrder", repairedOrder.c_str());
+        DebugMapConfig(L"Repaired mapTypeOrder: " + repairedOrder);
+    }
+
+    return result;
+}
+
 struct State {
     HWND hwnd = nullptr, parent = nullptr;
     std::vector<Track> tracks;
@@ -351,8 +492,10 @@ struct State {
     // Factor to scale UI elements and coordinates on High-DPI displays.
     float dpiScale = 1.0f;
 
-    // handle map provider switching
-    bool isSatelliteMode = false;
+    // Map style switching.
+    std::vector<std::wstring> mapTypeOrder;
+    int currentMapTypeIndex = 0;
+    std::wstring mapConfigWarning;
 
     // Sidebar and Selection state
     HWND hwndList = nullptr;      // Handle of lateral listbox
@@ -360,6 +503,7 @@ struct State {
     int sidebarWidth = 150;       // Current width of the sidebar
     bool resizingSidebar = false; // resize interaction state
     std::wstring fileDisplayName; // GPX file stem used as a fallback display name
+    bool trackNamesIncludeFileStem = false; // True after an append operation disambiguates sidebar labels by source file.
 };
 
 static int MinSidebarWidthPx(const State& s) {
@@ -374,6 +518,24 @@ static D2D1_COLOR_F SpeedProfileColor(const State& s, float alpha = 0.85f) {
     D2D1_COLOR_F colour = D2D1::ColorF(0.0f, 0.35f, 0.95f, alpha);
     ParseHexColour(s.opt.speedProfileColor, colour, alpha);
     return colour;
+}
+
+static const wchar_t* CurrentMapEndpoint(const State& s) {
+    if (s.mapTypeOrder.empty()) return s.opt.standardTileEndpoint;
+    const int index = std::clamp(s.currentMapTypeIndex, 0, (int)s.mapTypeOrder.size() - 1);
+    return MapTypeEndpoint(s.opt, s.mapTypeOrder[(size_t)index]);
+}
+
+static void ApplyMapTypeIndex(State& s, int index) {
+    if (s.mapTypeOrder.empty()) return;
+    const int count = (int)s.mapTypeOrder.size();
+    s.currentMapTypeIndex = ((index % count) + count) % count;
+
+    if (s.cache) {
+        s.cache->UpdateEndpoint(CurrentMapEndpoint(s));
+        s.cache->Clear();
+    }
+    InvalidateRect(s.hwnd, NULL, FALSE);
 }
 
 struct TrackInfoSummary {
@@ -1811,41 +1973,36 @@ static void DrawCoords(const State& s, POINT pt) {
     float dipRight = (float)rc.right / s.dpiScale;
     float dipOffset = (s.tracks.size() > 1) ? ((float)s.sidebarWidth / s.dpiScale) : 0.0f;
     float dipMouseX = (float)pt.x / s.dpiScale;
-    if (dipMouseX < dipOffset) return;
 
-    float mapW = dipRight - dipOffset;
-    // Vertical center must account for the elevation profile height
-    float mapH = dipBottom - ProfileReservedHeight(s);
-    float centerY = mapH / 2.0f;
+    std::wstring text = TrackDisplayName(s, s.selectedTrack);
+    if (dipMouseX >= dipOffset) {
+        float mapW = dipRight - dipOffset;
+        // Vertical center must account for the elevation profile height
+        float mapH = dipBottom - ProfileReservedHeight(s);
+        float centerY = mapH / 2.0f;
 
-    double x = s.cx - mapW / 2 + (dipMouseX - dipOffset);
-    float dipMouseY = (float)pt.y / s.dpiScale;
-    double y = s.cy - centerY + dipMouseY;
-    double lon = x2lon(x, s.zoom), lat = y2lat(y, s.zoom);
+        double x = s.cx - mapW / 2 + (dipMouseX - dipOffset);
+        float dipMouseY = (float)pt.y / s.dpiScale;
+        double y = s.cy - centerY + dipMouseY;
+        double lon = x2lon(x, s.zoom), lat = y2lat(y, s.zoom);
 
-    /*
-    // --- DEBUG CODE (Visualizzabile con DebugView o in VS Output) ---
-    wchar_t dbg[256];
-    swprintf(dbg, 256, L"Mouse Y: %d | isSatelliteMode: %d | InProfile: %s\n",
-        pt.y, s.isSatelliteMode,
-        IsPointInElevationProfile(s, s.mousePos) ? L"YES" : L"NO");
-    OutputDebugStringW(dbg);*/
+        /*
+        // --- DEBUG CODE (Visualizzabile con DebugView o in VS Output) ---
+        wchar_t dbg[256];
+        swprintf(dbg, 256, L"Mouse Y: %d | mapTypeIndex: %d | InProfile: %s\n",
+            pt.y, s.currentMapTypeIndex,
+            IsPointInElevationProfile(s, s.mousePos) ? L"YES" : L"NO");
+        OutputDebugStringW(dbg);*/
 
-    wchar_t buf[256];
-    if (s.selectedTrack != -1 && (size_t)s.selectedTrack < s.tracks.size()) {
-        const auto& t = s.tracks[s.selectedTrack];
-        std::wstring name = t.name.empty() ? (L"Track " + std::to_wstring(s.selectedTrack + 1)) : t.name;
-        swprintf(buf, 256, L"%s | lat %.6f lon %.6f", name.c_str(), lat, lon);
-    }
-    else {
-        const std::wstring name = TrackDisplayName(s, -1);
-        swprintf(buf, 256, L"%s | lat %.6f lon %.6f", name.c_str(), lat, lon);
+        wchar_t coords[64];
+        swprintf(coords, 64, L" | lat %.6f lon %.6f", lat, lon);
+        text += coords;
     }
 
-    D2D1_RECT_F r = D2D1::RectF(dipOffset + 8.f, 8.f, dipOffset + 600.f, 28.f);
+    D2D1_RECT_F r = D2D1::RectF(dipOffset + 8.f, 8.f, dipRight - 8.f, 28.f);
     FillTextBackdrop(s, r);
     s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
-    s.rt->DrawTextW(buf, (UINT32)wcslen(buf), s.tf, r, s.brush);
+    s.rt->DrawTextW(text.c_str(), (UINT32)text.size(), s.tf, r, s.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 static void DrawGrid(const State& s) {
@@ -2860,16 +3017,9 @@ static void OnKey(State& s, WPARAM vk) {
         return;
     }
 
-    if (vk == 'T' || vk == 't') { // Toggle Tile Server
-        s.isSatelliteMode = !s.isSatelliteMode;
-
-        const wchar_t* targetUrl = s.isSatelliteMode ? s.opt.satelliteTileEndpoint : s.opt.tileEndpoint;
-
-        if (s.cache) {
-            s.cache->UpdateEndpoint(targetUrl);
-            s.cache->Clear(); // Flush all current bitmaps and memory
-        }
-        InvalidateRect(s.hwnd, NULL, FALSE);
+    if (vk == 'T' || vk == 't') { // Cycle map style
+        ApplyMapTypeIndex(s, s.currentMapTypeIndex + 1);
+        return;
     }
     if (vk == 'F' || vk == 'f') { // Fit to Window
         FitToWindow(s);
@@ -2996,6 +3146,8 @@ static bool IsClientPointInMapView(const State& s, const POINT& clientPt) {
     return true;
 }
 
+static void ShowAddTrackFileDialog(State& s);
+
 // Show a context menu for map-specific toggles, mirroring existing keyboard shortcuts.
 static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     HMENU hMenu = CreatePopupMenu();
@@ -3007,11 +3159,17 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
         tilesFlags |= MF_CHECKED;
     }
     AppendMenuW(hMenu, tilesFlags, ID_CTX_TOGGLE_TILES, L"Toggle tiles (M)");
-    UINT serverFlags = MF_STRING;
-    if (s.isSatelliteMode) {
-        serverFlags |= MF_CHECKED;
+    HMENU hMapStyleMenu = CreatePopupMenu();
+    if (hMapStyleMenu) {
+        for (size_t i = 0; i < s.mapTypeOrder.size(); ++i) {
+            UINT styleFlags = MF_STRING;
+            if ((int)i == s.currentMapTypeIndex) {
+                styleFlags |= MF_CHECKED;
+            }
+            AppendMenuW(hMapStyleMenu, styleFlags, ID_CTX_MAP_STYLE_BASE + (UINT)i, MapTypeLabel(s.mapTypeOrder[i]));
+        }
+        AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hMapStyleMenu, L"Map style (T)");
     }
-    AppendMenuW(hMenu, serverFlags, ID_CTX_TOGGLE_SERVER, L"Toggle tile server (T)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, ID_CTX_FIT_TO_WINDOW, L"Fit to window (F)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -3021,6 +3179,8 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
         gridFlags |= MF_CHECKED;
     }
     AppendMenuW(hMenu, gridFlags, ID_CTX_TOGGLE_GRID, L"Toggle grid when tiles are off (G)");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, ID_CTX_ADD_TRACK_FILE, L"Add track file...");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, ID_CTX_SHOW_INFO, L"Track summary (I)");
     AppendMenuW(hMenu, MF_STRING, ID_CTX_PRINTSCREEN, L"Copy view to clipboard (Ctrl+C)");
@@ -3057,8 +3217,8 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
         OnKey(s, 'M');
         return;
     }
-    if (cmd == ID_CTX_TOGGLE_SERVER) {
-        OnKey(s, 'T');
+    if (cmd >= ID_CTX_MAP_STYLE_BASE && cmd < ID_CTX_MAP_STYLE_BASE + (int)s.mapTypeOrder.size()) {
+        ApplyMapTypeIndex(s, cmd - ID_CTX_MAP_STYLE_BASE);
         return;
     }
     if (cmd == ID_CTX_FIT_TO_WINDOW) {
@@ -3068,6 +3228,10 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     }
     if (cmd == ID_CTX_TOGGLE_GRID) {
         OnKey(s, 'G');
+        return;
+    }
+    if (cmd == ID_CTX_ADD_TRACK_FILE) {
+        ShowAddTrackFileDialog(s);
         return;
     }
     if (cmd == ID_CTX_TOGGLE_ELEVATION) {
@@ -3344,6 +3508,165 @@ static bool ParseGpxFile(const wchar_t* path, std::vector<Track>& tracks) {
     return !tracks.empty();
 }
 
+static void PrefixTrackNamesWithFileStem(std::vector<Track>& tracks, const std::wstring& fileStem) {
+    if (fileStem.empty()) return;
+    const bool multiTrackFile = tracks.size() > 1;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        std::wstring name = tracks[i].name;
+        if (name.empty()) {
+            if (multiTrackFile) {
+                name = L"Track " + std::to_wstring(i + 1);
+            } else {
+                tracks[i].name = fileStem;
+                continue;
+            }
+        }
+        if (_wcsicmp(name.c_str(), fileStem.c_str()) == 0) {
+            tracks[i].name = fileStem;
+            continue;
+        }
+        tracks[i].name = fileStem + L" / " + name;
+    }
+}
+
+static bool LoadTracksFromSupportedPath(HWND parent, const wchar_t* filePath, const Options& opt,
+                                        std::vector<Track>& tracks, std::vector<GpxWaypoint>& waypoints,
+                                        std::wstring& error) {
+    tracks.clear();
+    waypoints.clear();
+    error.clear();
+
+    if (!IsSupportedInputPath(filePath)) {
+        error = L"Unsupported file type";
+        return false;
+    }
+
+    TempGpxFile tempGpx;
+    const wchar_t* pathToLoad = filePath;
+    if (IsFitPath(filePath)) {
+        if (!ConvertFitToGpx(parent, filePath, opt, tempGpx.path, tempGpx.dir)) {
+            error = L"FIT conversion failed";
+            return false;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
+    if (IsKmlPath(filePath)) {
+        if (!ConvertKmlToGpx(parent, filePath, opt, tempGpx.path, tempGpx.dir)) {
+            error = L"KML/KMZ conversion failed";
+            return false;
+        }
+        pathToLoad = tempGpx.path.c_str();
+    }
+
+    const bool hasTracks = ParseGpxFile(pathToLoad, tracks);
+    const bool hasWaypoints = ParseGpxWaypoints(pathToLoad, waypoints);
+    if (!hasTracks && !hasWaypoints) {
+        error = L"No GPX tracks or waypoints found";
+        return false;
+    }
+
+    PrefixTrackNamesWithFileStem(tracks, GetPathStem(filePath));
+    return true;
+}
+
+static std::vector<std::wstring> OpenAdditionalTrackFilesDialog(HWND owner) {
+    std::vector<std::wstring> files;
+    std::vector<wchar_t> buffer(65536, L'\0');
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"GPX/FIT/KML/KMZ Files (*.gpx;*.fit;*.kml;*.kmz)\0*.gpx;*.fit;*.kml;*.kmz\0All Files (*.*)\0*.*\0\0";
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = (DWORD)buffer.size();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_ALLOWMULTISELECT;
+    ofn.lpstrTitle = L"Add GPX, FIT, KML, or KMZ track files";
+
+    if (!GetOpenFileNameW(&ofn)) {
+        return files;
+    }
+
+    const wchar_t* p = buffer.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+    if (*p == L'\0') {
+        files.push_back(first);
+        return files;
+    }
+
+    while (*p != L'\0') {
+        wchar_t combined[MAX_PATH]{};
+        PathCombineW(combined, first.c_str(), p);
+        files.push_back(combined);
+        p += wcslen(p) + 1;
+    }
+    return files;
+}
+
+static void RefreshSidebarAfterTrackAppend(State& s) {
+    RECT rc{};
+    if (GetClientRect(s.hwnd, &rc)) {
+        OnSize(s, rc.right - rc.left, rc.bottom - rc.top);
+    }
+    if (s.hwndList) {
+        UpdateSidebarContent(s);
+        ShowWindow(s.hwndList, s.tracks.size() > 1 ? SW_SHOW : SW_HIDE);
+    }
+}
+
+static void ShowAddTrackFileDialog(State& s) {
+    const std::vector<std::wstring> files = OpenAdditionalTrackFilesDialog(s.hwnd);
+    if (files.empty()) return;
+
+    if (!s.trackNamesIncludeFileStem) {
+        PrefixTrackNamesWithFileStem(s.tracks, s.fileDisplayName);
+        s.trackNamesIncludeFileStem = true;
+    }
+
+    size_t appendedTracks = 0;
+    size_t appendedWaypoints = 0;
+    std::wstring failures;
+
+    for (const auto& file : files) {
+        std::vector<Track> newTracks;
+        std::vector<GpxWaypoint> newWaypoints;
+        std::wstring error;
+        if (!LoadTracksFromSupportedPath(s.hwnd, file.c_str(), s.opt, newTracks, newWaypoints, error)) {
+            failures += L"\n";
+            failures += GetPathStem(file.c_str());
+            if (!error.empty()) {
+                failures += L" - ";
+                failures += error;
+            }
+            continue;
+        }
+
+        appendedTracks += newTracks.size();
+        appendedWaypoints += newWaypoints.size();
+        s.tracks.insert(s.tracks.end(), std::make_move_iterator(newTracks.begin()), std::make_move_iterator(newTracks.end()));
+        s.waypoints.insert(s.waypoints.end(), std::make_move_iterator(newWaypoints.begin()), std::make_move_iterator(newWaypoints.end()));
+    }
+
+    if (appendedTracks == 0 && appendedWaypoints == 0) {
+        if (!failures.empty()) {
+            MessageBoxW(s.hwnd, (L"No additional files were added:\n" + failures).c_str(), L"GPXLister add track file", MB_OK | MB_ICONWARNING);
+        }
+        return;
+    }
+
+    s.selectedTrack = -1;
+    s.hoverTrackIdx = -1;
+    s.hoverPointIdx = -1;
+    ComputeBounds(s);
+    RefreshSidebarAfterTrackAppend(s);
+    FitToWindow(s);
+    InvalidateRect(s.hwnd, NULL, TRUE);
+
+    if (!failures.empty()) {
+        MessageBoxW(s.hwnd, (L"Some files could not be added:\n" + failures).c_str(), L"GPXLister add track file", MB_OK | MB_ICONWARNING);
+    }
+}
+
 static HWND DoLoad(HWND ParentWin, const wchar_t* path, const wchar_t* displayPath, int ShowFlags) {
     HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hrCo) && hrCo != RPC_E_CHANGED_MODE) return NULL;
@@ -3355,6 +3678,12 @@ static HWND DoLoad(HWND ParentWin, const wchar_t* path, const wchar_t* displayPa
     s->parent = ParentWin;
     s->fileDisplayName = GetPathStem(displayPath ? displayPath : path);
     LoadOptions(s->opt);
+    MapOrderValidation mapOrder = ValidateMapTypeOrder(s->opt);
+    s->mapTypeOrder = std::move(mapOrder.order);
+    s->mapConfigWarning = std::move(mapOrder.warning);
+    if (!s->mapConfigWarning.empty()) {
+        MessageBoxW(ParentWin, s->mapConfigWarning.c_str(), L"GPXLister map configuration", MB_OK | MB_ICONWARNING);
+    }
 
     s->tracks.clear(); // Explicitly clear any stale data before parsing
     if (ParseGpxFile(path, s->tracks)) ComputeBounds(*s); // Compute bounds only if we have tracks
@@ -3386,7 +3715,7 @@ static HWND DoLoad(HWND ParentWin, const wchar_t* path, const wchar_t* displayPa
         s->showCoords = s->opt.showCoords;
 
         s->cache = new TileCache();
-        s->cache->Configure(s->opt.tileEndpoint, s->opt.userAgent, (size_t)std::max<int>(256, s->opt.maxBitmaps), s->opt.requestDelayMs, s->opt.backoffStartMs, s->opt.backoffMaxMs);
+        s->cache->Configure(CurrentMapEndpoint(*s), s->opt.userAgent, (size_t)std::max<int>(256, s->opt.maxBitmaps), s->opt.requestDelayMs, s->opt.backoffStartMs, s->opt.backoffMaxMs);
         s->cache->SetNotify(s->hwnd, TILE_READY_MSG);
         s->cache->Start((int)std::max<int>(1, s->opt.workers));
         InvalidateRect(hwnd, NULL, TRUE);
@@ -3410,11 +3739,11 @@ HWND WINAPI ListLoadW(HWND ParentWin, WCHAR* FileToLoad, int ShowFlags) {
     if (!IsSupportedInputPath(FileToLoad)) {
         return NULL;
     }
-	
-	Options opt{};	
+
+    Options opt{};
     LoadOptions(opt);
-	
-	TempGpxFile tempGpx;
+
+    TempGpxFile tempGpx;
     const wchar_t* pathToLoad = FileToLoad;
     if (IsFitPath(FileToLoad)) {
         if (!ConvertFitToGpx(ParentWin, FileToLoad, opt, tempGpx.path, tempGpx.dir)) {

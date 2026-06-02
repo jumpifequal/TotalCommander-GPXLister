@@ -40,6 +40,17 @@ static void ReadStr(const wchar_t* path, const wchar_t* key, const wchar_t* def,
     GetPrivateProfileStringW(L"GPXLister", key, def, out, (DWORD)outc, path);
 }
 
+static bool ReadStrOptional(const wchar_t* path, const wchar_t* key, wchar_t* out, size_t outc) {
+    if (!out || outc == 0) return false;
+    const wchar_t* sentinel = L"\x1F";
+    GetPrivateProfileStringW(L"GPXLister", key, sentinel, out, (DWORD)outc, path);
+    if (wcscmp(out, sentinel) == 0) {
+        out[0] = L'\0';
+        return false;
+    }
+    return true;
+}
+
 static void GetIniPath(wchar_t* iniPath, size_t iniPathCount) {
     if (!iniPath || iniPathCount == 0) return;
     iniPath[0] = L'\0';
@@ -80,7 +91,14 @@ void LoadOptions(Options& o){
     if (o.maxBitmaps > 4096) o.maxBitmaps = 4096;
     ReadInt(iniPath, L"prefetchRings", o.prefetchRings, o.prefetchRings);
     ReadStr(iniPath, L"tileEndpoint", o.tileEndpoint, o.tileEndpoint, 256);
+    lstrcpynW(o.standardTileEndpoint, o.tileEndpoint, 256); // legacy tileEndpoint is the standard map style unless overridden.
+    ReadStr(iniPath, L"standardTileEndpoint", o.standardTileEndpoint, o.standardTileEndpoint, 256);
     ReadStr(iniPath, L"satelliteTileEndpoint", o.satelliteTileEndpoint, o.satelliteTileEndpoint, 256);
+    ReadStr(iniPath, L"topoTileEndpoint", o.topoTileEndpoint, o.topoTileEndpoint, 256);
+    o.hasMapTypeOrder = ReadStrOptional(iniPath, L"mapTypeOrder", o.mapTypeOrder, 128);
+    if (!o.hasMapTypeOrder) {
+        lstrcpynW(o.mapTypeOrder, L"standard,satellite,topo", 128);
+    }
     ReadStr(iniPath, L"userAgent", o.userAgent, o.userAgent, 128);
     ReadBool(iniPath, L"showElevationProfile", o.showElevationProfile, o.showElevationProfile);
     ReadBool(iniPath, L"showSpeedProfile", o.showSpeedProfile, o.showSpeedProfile);
@@ -103,4 +121,10 @@ void SaveOptionBool(const wchar_t* key, bool value) {
     wchar_t iniPath[MAX_PATH];
     GetIniPath(iniPath, MAX_PATH);
     WritePrivateProfileStringW(L"GPXLister", key, value ? L"1" : L"0", iniPath);
+}
+
+void SaveOptionString(const wchar_t* key, const wchar_t* value) {
+    wchar_t iniPath[MAX_PATH];
+    GetIniPath(iniPath, MAX_PATH);
+    WritePrivateProfileStringW(L"GPXLister", key, value ? value : L"", iniPath);
 }

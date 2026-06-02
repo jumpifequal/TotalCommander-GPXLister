@@ -31,15 +31,9 @@ void TileCache::SetNotify(HWND hwnd, UINT msg) {
 
 void TileCache::Start(int workers){
     Stop(); _quit=false;
-    if (!_hInternet) 
-        _hInternet = InternetOpenW(_ua.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if(workers<1) workers=1; 
     if(workers>8) workers=8;
     _ths.clear(); _ths.reserve(workers);
-    if (_hInternet) { 
-        InternetCloseHandle(_hInternet); 
-        _hInternet = NULL; 
-    }
     for(int i=0;i<workers;i++) _ths.emplace_back([this]{ Worker(); });
 }
 void TileCache::Stop(){
@@ -102,8 +96,6 @@ bool TileCache::Download(const std::wstring& url, std::vector<BYTE>& out){
 
     HINTERNET hi = InternetOpenW(_ua.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!hi) { OutputDebugStringW(L"[TileCache] InternetOpenW failed\n"); return false; }
-    _hInternet = hi;
-    if (!hi) return false;
 
     // Timeouts: keep the UI responsive even if the endpoint hangs.
     DWORD ms = 8000;
