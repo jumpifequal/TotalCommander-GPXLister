@@ -54,8 +54,6 @@ void TileCache::Clear(){
     _q.clear();
 }
 
-void TileCache::Enqueue(const TileKey& k){ EnqueuePriority(k, 1000000); }
-
 void TileCache::EnqueuePriority(const TileKey& k, int priority){
     std::lock_guard<std::mutex> lk(_mx);
     if (_quit) return;

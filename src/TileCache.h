@@ -36,7 +36,6 @@ public:
     void Start(int workers=1);
     void Stop();
     void Clear();
-    void Enqueue(const TileKey& k);                       // normal priority
     void EnqueuePriority(const TileKey& k, int priority); // lower value = sooner
 	void UpdateEndpoint(const std::wstring& endpoint); // allow changing endpoint on the fly
     int  Pending() const;

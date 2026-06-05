@@ -4,7 +4,6 @@
 #include <dwrite.h>
 #include <wincodec.h>
 #include <commdlg.h>
-#include <commctrl.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -12,7 +11,6 @@
 #include <cwctype>
 #include <iterator>
 #include <mutex> // Added for std::call_once (DPI Fix)
-#include <string>
 #include <shlwapi.h>
 
 #define TILE_READY_MSG (WM_APP+1)
@@ -38,7 +36,6 @@ static const double kElevationProfileSmoothingRadiusM = 125.0;
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "windowscodecs.lib")
-#pragma comment(lib, "comctl32.lib")
 
 #include "listplug.h"
 #include "GPXParser.h"
@@ -1234,32 +1231,6 @@ static bool ComputeTrackInfoSummary(const State& s, TrackInfoSummary& out) {
         return true;
 }
 
-static bool ShowSummaryTaskDialog(HWND owner, const std::wstring& title, const std::wstring& heading, const std::wstring& content) {
-    HMODULE comctl = LoadLibraryW(L"comctl32.dll");
-    if (!comctl) return false;
-
-    using TaskDialogIndirectFn = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
-    auto taskDialogIndirect = (TaskDialogIndirectFn)GetProcAddress(comctl, "TaskDialogIndirect");
-    if (!taskDialogIndirect) {
-        FreeLibrary(comctl);
-        return false;
-    }
-
-    TASKDIALOGCONFIG cfg{};
-    cfg.cbSize = sizeof(cfg);
-    cfg.hwndParent = owner;
-    cfg.dwFlags = TDF_SIZE_TO_CONTENT;
-    cfg.dwCommonButtons = TDCBF_OK_BUTTON;
-    cfg.pszWindowTitle = title.c_str();
-    cfg.pszMainInstruction = heading.c_str();
-    cfg.pszContent = content.c_str();
-    cfg.pszMainIcon = TD_INFORMATION_ICON;
-
-    const HRESULT hr = taskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
-    FreeLibrary(comctl);
-    return SUCCEEDED(hr);
-}
-
 struct SummaryDialogModel {
     std::wstring title;
     std::wstring subtitle;
@@ -1508,20 +1479,6 @@ static void ShowTrackInfoDialog(State & s) {
         swprintf(avgSpeedLine, 64, L"N/A");
         swprintf(maxSpeedLine, 64, L"N/A");
     }
-    
-    wchar_t line4[256];
-    if (!startStr.empty() && !endStr.empty()) {
-        if (!durStr.empty()) {
-            swprintf(line4, 256, L"Time: start %s. end %s. elapsed %s", startStr.c_str(), endStr.c_str(), durStr.c_str());            
-        }
-        else {
-            swprintf(line4, 256, L"Time: start %s. end %s", startStr.c_str(), endStr.c_str());            
-        }   
-    }
-    else {
-        swprintf(line4, 256, L"Time: not available");        
-    }
-    
     wchar_t line5[128];
     swprintf(line5, 128, L"Waypoints: %zu", sum.waypointCount);
     
@@ -3017,8 +2974,9 @@ static void OnKey(State& s, WPARAM vk) {
         return;
     }
 
-    if (vk == 'T' || vk == 't') { // Cycle map style
-        ApplyMapTypeIndex(s, s.currentMapTypeIndex + 1);
+    if (vk == 'T' || vk == 't') { // Cycle map style; Shift reverses direction
+        const int direction = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
+        ApplyMapTypeIndex(s, s.currentMapTypeIndex + direction);
         return;
     }
     if (vk == 'F' || vk == 'f') { // Fit to Window
