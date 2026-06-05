@@ -1,5 +1,11 @@
 # Changelog
 
+
+## v2.7.1 - Reverse map style cycling
+
+- Added `Shift+T` to cycle backward through the configured map styles, making Standard/Topo comparisons quicker when those styles are adjacent in `mapTypeOrder`.
+- Updated distribution metadata to version `2.7.1`.
+
 ## v2.7 - Configurable map styles
 
 - Added `mapTypeOrder` to control the startup map style, the `T` keyboard cycle, and the map context-menu order.

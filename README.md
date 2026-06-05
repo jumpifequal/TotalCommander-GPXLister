@@ -4,14 +4,14 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
-**Latest release:** `v2.7` adds configurable map style order, standard/satellite/topo cycling, direct map-style selection, and temporary track-file append from the map context menu.
+**Latest release:** `v2.7.1` adds reverse map style cycling with `Shift+T`, so adjacent styles such as Standard and Topo can be compared quickly.
 
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
 - **FIT Support**: `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **KML/KMZ Support**: `.kml` and `.kmz` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
-- **Map Style Cycle**: Switch between configured map styles with the `T` key, or choose a style directly from the map context menu.
+- **Map Style Cycle**: Switch forward through configured map styles with `T`, backward with `Shift+T`, or choose a style directly from the map context menu.
 - **Asynchronous Tiles**: PNG tiles are handled via **WIC** and drawn as D2D bitmaps; background loading ensures the UI remains responsive.
 - **Multi-Track Support**: Full support for GPX files with multiple tracks, including individual track names and colours.
 - **Temporary Track Append**: Add extra GPX/FIT/KML/KMZ files to the current view from the map context menu.
@@ -43,7 +43,8 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 - **Fit to Window**: Press `F` or **Double-click** (fits the selected track or all tracks; `F` is handled reliably through Total Commander's Lister command path).
 - **Sidebar**: Drag the right edge to resize; select tracks to filter the view.
 - **Toggles**:
-  - `T`: Cycle through the configured map styles from `mapTypeOrder`.
+  - `T`: Cycle forward through the configured map styles from `mapTypeOrder`.
+  - `Shift+T`: Cycle backward through the configured map styles.
   - `M`: Map tiles on/off.
   - `G`: Grid overlay on/off.
   - `E`: Elevation profile on/off.
@@ -72,12 +73,12 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 - `kmlConverter` (string, default `kml2gpx.exe`): Converter executable for `.kml` and `.kmz` files. Relative names are searched in the plugin folder first, then in `PATH`.
 - `kmlArgs` (string, default `{input} {output} --elevation-dataset srtm30m,eudem25m`): kml2gpx command-line template. Supported placeholders are `{converter}`, `{input}`, and `{output}`.
 - `kmlTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
-- When slope colouring is enabled, the gradient is computed from elevation change over distance and mapped to a blue→green→red ramp, then blended with the per-track base colour.
+- When slope colouring is enabled, the gradient is computed from elevation change over distance and mapped to a blue->green->red ramp, then blended with the per-track base colour.
 - Colour changes are computed in distance windows rather than per raw GPX segment to avoid visual noise. Track rendering uses rounded joins/caps to prevent visible seams when colours change.
 
 ## Supported Map Tile Providers
 
-GPXLister can use raster web-map tiles that return PNG or JPEG images through a URL template containing `{z}`, `{x}`, and `{y}`. The `T` key cycles through the valid styles in `mapTypeOrder`; the map context menu offers the same styles for direct selection. Unknown map types are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
+GPXLister can use raster web-map tiles that return PNG or JPEG images through a URL template containing `{z}`, `{x}`, and `{y}`. The `T` key cycles forward through the valid styles in `mapTypeOrder`, and `Shift+T` cycles backward; the map context menu offers the same styles for direct selection. Unknown map types are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
 
 Example:
 
@@ -86,7 +87,7 @@ mapTypeOrder=standard,satellite,topo
 standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
 topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
-userAgent=GPXLister/2.7
+userAgent=GPXLister/2.7.1
 ```
 
 | Provider                    | INI endpoint example                                                                                                                                                | Pros                                                                                                  | Cons and limits                                                                                                                                                                                             |

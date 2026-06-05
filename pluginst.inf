@@ -7,7 +7,7 @@ file=GPXLister.wlx
 defaultdir=GPXLister
 defaultextension=gpx;fit;kml;kmz
 defaultfilter=EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
-version=2.7
+version=2.7.1
 author=jumpifequal
 homepage=https://github.com/jumpifequal/TotalCommander-GPXLister
 notes=Requires Windows 10+. Keep fit2gpx.exe and kml2gpx.exe beside the plugin for FIT,KML,KMZ support

@@ -1,10 +1,10 @@
-# GPXLister — Lister Plugin for Total Commander
+# GPXLister - Lister Plugin for Total Commander
 
 **Binary names:** `GPXLister.wlx` and `GPXLister.wlx64`
 
 **FIT/KML support:** `.fit` files are converted transparently through `Fit2Gpx.exe`, and `.kml` or `.kmz` files through `kml2gpx.exe`, into a temporary GPX file, rendered through the existing GPX engine, and cleaned up after loading.
 
-**Purpose:** Fast preview of `.gpx` tracks in Total Commander’s Lister (10/11+), featuring interactive maps, elevation profiles, and multi-track selection.
+**Purpose:** Fast preview of .gpx tracks in Total Commander's Lister (10/11+), featuring interactive maps, elevation profiles, and multi-track selection.
 
 ## 1) Intent & Overview
 
@@ -12,7 +12,7 @@
 
 - **Visual Rendering:** Displays GPX **tracks** (`trk`/`trkseg`/`trkpt`) with anti-aliased lines and elevation profiles. Waypoints and multiple tracks GPX are supported 
 - **Map Background:** Uses Slippy Map tiles (OpenStreetMap by default) with an automatic fallback to a cartographic grid when offline.
-- **Map Style Cycle:** Quickly switch between configured map styles, or select a specific style from the map context menu.
+- **Map Style Cycle:** Quickly switch forward or backward between configured map styles, or select a specific style from the map context menu.
 - **Multi-Track Support:** Handles files with multiple tracks using a selectable and **resizable lateral sidebar**.
 - **Performance:** Capable of rendering large GPX files (100,000+ points) smoothly without blocking the UI.
 - **Zero Disk Footprint:** All tiles and bitmaps are managed in RAM; no temporary files are written to disk.
@@ -24,7 +24,7 @@
 - **Rendering Engine:** Utilises **Direct2D** for hardware-accelerated, high-quality drawing.
 - **DPI Awareness:** Fully compatible with Windows scaling settings for crisp rendering on high-resolution displays.
 - **Asynchronous Loading:** PNG tiles are downloaded via background worker threads and promoted to the UI thread once decoded.
-- **Antimeridian Handling:** Correctly handles tracks that cross the 180° longitude line.
+- **Antimeridian Handling:** Correctly handles tracks that cross the 180Â° longitude line.
 
 ## 3) Installation
 
@@ -37,7 +37,7 @@
 ### A) Manual Installation
 
 1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support and **`kml2gpx.exe`** in the same folder if you want `.kml` and `.kmz` support.
-2. In **Total Commander**: Navigate to `Configuration → Options… → Plugins → Lister plugins (WLX) → Add…`.
+2. In **Total Commander**: Navigate to `Configuration -> Options... -> Plugins -> Lister plugins (WLX) -> Add...`.
 3. Select the plugin binary and confirm the detect string.
 4. *(Optional)* Place a customised **`GPXLister.ini`** in the same folder as the plugin.
 
@@ -49,35 +49,37 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 
 ### Keyboard Shortcuts
 
-- **Arrow Keys** — Pan the map.
+- **Arrow Keys** - Pan the map.
 
-- **+ / −** — Zoom in and out.
+- **+ / -** - Zoom in and out.
 
-- **F / f** — **Fit to window** (recentre and choose the best zoom for the active selection).
+- **F / f** - **Fit to window** (recentre and choose the best zoom for the active selection).
 
-- **M/m**— Toggle **map tiles** on/off.
+- **M/m** - Toggle **map tiles** on/off.
 
-- **T / t** — Cycle through the configured map styles from `mapTypeOrder`.
+- **T / t** - Cycle forward through the configured map styles from `mapTypeOrder`.
 
-- **G/g** — Toggle **grid overlay** on/off.
+- **Shift+T** - Cycle backward through the configured map styles.
 
-- **E/e** — Toggle **elevation profile** (the state is saved automatically to the INI file).
+- **G/g** - Toggle **grid overlay** on/off.
 
-- **V/v** — Toggle **speed profile** independently from the elevation profile.
+- **E/e** - Toggle **elevation profile** (the state is saved automatically to the INI file).
 
-- **Ctrl+C / Ctrl+Ins** — Copy the current visible Lister view to the clipboard as PNG.
+- **V/v** - Toggle **speed profile** independently from the elevation profile.
 
-- **I/i** — Open the DPI-aware track information dialog.
+- **Ctrl+C / Ctrl+Ins** - Copy the current visible Lister view to the clipboard as PNG.
 
-- **S/s** — Toggle **slope-based track colouring** on/off (progressive colouring based on gradient).
+- **I/i** - Open the DPI-aware track information dialog.
+
+- **S/s** - Toggle **slope-based track colouring** on/off (progressive colouring based on gradient).
   
   ### Mouse Interactions
 
-- **Left-drag** — Pan the map.
+- **Left-drag** - Pan the map.
 
-- **Mouse wheel** — Zoom in/out toward the cursor position.
+- **Mouse wheel** - Zoom in/out toward the cursor position.
 
-- **Double-click** — Fit to window the track
+- **Double-click** - Fit to window the track
 
 - **Right-click (map view)** - Open a context menu with direct access to existing actions.
   
@@ -95,8 +97,8 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
   The menu is shown only when the pointer is inside the map view.
   It is not shown when right-clicking the sidebar or the elevation profile area.
 
-- **Sidebar drag** — Drag the right edge of the lateral panel to resize the track list.
-* **Mouse over** — Go near the track or on the elevation window to activate mouse over.
+- **Sidebar drag** - Drag the right edge of the lateral panel to resize the track list.
+* **Mouse over** - Go near the track or on the elevation window to activate mouse over.
   
   ### Overlays
 - **Top-left:** Active **track name**, latitude, and longitude.
@@ -113,7 +115,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
 
 - **Enable/disable:** Press **S** or use the map right-click context menu item.
 
-- **How it is calculated:** The gradient is computed from elevation change divided by horizontal distance, then mapped to a colour ramp (downhill→blue, flat→green, uphill→red) and blended with the per-track base colour.
+- **How it is calculated:** The gradient is computed from elevation change divided by horizontal distance, then mapped to a colour ramp (downhill->blue, flat->green, uphill->red) and blended with the per-track base colour.
 
 - **Noise control:** The colour is updated in distance windows (not on every raw GPX segment). The window length is adaptive, using longer windows on near-flat sections and shorter windows on steeper sections, while staying above GPX noise.
 
@@ -139,7 +141,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `kmlConverter`              | string | `kml2gpx.exe`                                           | Converter executable for `.kml` and `.kmz` files. Relative names search the plugin folder first, then `PATH`.  |
   | `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
   | `kmlTimeoutSec`             | int    | `60`                                                    | Maximum KML/KMZ conversion time before the converter is terminated and an error is shown.                      |
-  | `mapTypeOrder`              | string | `standard,satellite,topo`                               | Startup, keyboard-cycle, and context-menu order for map styles. Valid values: `standard`, `satellite`, `topo`. |
+  | `mapTypeOrder`              | string | `standard,satellite,topo`                               | Startup, forward/backward keyboard-cycle, and context-menu order for map styles. Valid values: `standard`, `satellite`, `topo`. |
   | `standardTileEndpoint`      | string | `OSM URL`                                               | URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.                  |
   | `satelliteTileEndpoint`     | string | `Google Sat`                                            | URL template for the satellite map style.                                                                      |
   | `topoTileEndpoint`          | string | `OpenTopoMap URL`                                       | URL template for the topo map style.                                                                           |
@@ -153,7 +155,7 @@ GPXLister can render the track polyline with progressive colouring driven by the
 
 ## 6) Supported Map Tile Providers
 
-GPXLister supports raster map tiles that return PNG or JPEG images from a URL template containing `{z}`, `{x}`, and `{y}`. Use `mapTypeOrder` to choose the startup, keyboard-cycle, and context-menu order for `standard`, `satellite`, and `topo`. Unknown values are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
+GPXLister supports raster map tiles that return PNG or JPEG images from a URL template containing `{z}`, `{x}`, and `{y}`. Use `mapTypeOrder` to choose the startup, keyboard-cycle, and context-menu order for `standard`, `satellite`, and `topo`; `T` moves forward and `Shift+T` moves backward through that order. Unknown values are ignored, duplicates are removed, and the `mapTypeOrder` key is repaired when possible.
 
 Example:
 
@@ -162,7 +164,7 @@ mapTypeOrder=standard,satellite,topo
 standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
 topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
-userAgent=GPXLister/2.7
+userAgent=GPXLister/2.7.1
 ```
 
 | Provider                    | INI endpoint example                                                                                                                                                        | Pros                                                                                                                   | Cons and limits                                                                                                                                                                                             |
@@ -197,13 +199,17 @@ Unsupported or limited cases:
 
 ## 8) License & Attribution
 
-- Map data © **OpenStreetMap contributors**.
+- Map data Â© **OpenStreetMap contributors**.
 
 - Developed utilising Windows **Direct2D**, **WIC**, and **WinINet** APIs.
 
 - Largely coded via Gemini Pro.
 
 ## Versions
+
+- **v2.7.1 - Reverse map style cycling**
+
+  - Added **Shift+T** to cycle backward through configured map styles for quick side-by-side comparisons such as Standard vs Topo.
 
 - **v2.7 - Configurable map styles**
 
@@ -244,21 +250,21 @@ Unsupported or limited cases:
   - Improved mouse-wheel zoom anchoring, sidebar resizing, profile/map hover synchronisation, and overlay readability under DPI scaling.
   - Build outputs are now organised under `x32` and `x64`.
 
-- **v1.0** — Initial public release.
+- **v1.0** - Initial public release.
 
-- **v1.3** — Added elevation profiles and support for multiple track colours.
+- **v1.3** - Added elevation profiles and support for multiple track colours.
 
-- **v1.4** — Added multi-track support, resizable sidebar, and track name overlays.
+- **v1.4** - Added multi-track support, resizable sidebar, and track name overlays.
 
-- **v1.5** — Added **Satellite Mode toggle ('T' key)** with customisable `satelliteTileEndpoint` in INI. Improved Google Maps tile support. Added mouse hover on the track window
+- **v1.5** - Added **Satellite Mode toggle ('T' key)** with customisable satelliteTileEndpoint in INI. Improved Google Maps tile support. Added mouse hover on the track window
 
-- v1.6 — Added mouse contextual menu 
+- v1.6 - Added mouse contextual menu
 
-- v1.7 — Added support for waypoints
+- v1.7 - Added support for waypoints
 
-- v1.8 — Added slope-based track colouring and configurable track stroke width.
+- v1.8 - Added slope-based track colouring and configurable track stroke width.
 
-- v1.9 — A bunch of functions and fixes
+- v1.9 - A bunch of functions and fixes
   
   - Added Speed Profile support ('V' key) with locale-independent parsing fix. Supports ISO 8601 time format (used by GPX ) 
   
@@ -274,7 +280,7 @@ Unsupported or limited cases:
   
   - Improved colouring of tooltips in Satellite mode
 
-- **v2.0 — High-DPI Support & Precision Update**
+- **v2.0 - High-DPI Support & Precision Update**
   
   - **Added** full **High-DPI (Per-Monitor V2) support**. The plugin now renders crisp text and lines at any Windows scaling factor (125%, 150%, 175%+) without blurring or virtualization.
   
