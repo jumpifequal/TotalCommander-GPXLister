@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="maplibre-gl.css">
+  <style>
+    html, body, #map { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #eef2f4; font: 13px "Segoe UI", sans-serif; }
+    #overlay {
+      position: absolute; left: 8px; top: 8px; z-index: 3; max-width: min(520px, calc(100% - 70px));
+      padding: 6px 8px; color: #111; background: rgba(255,255,255,.86);
+      border: 1px solid rgba(0,0,0,.2); border-radius: 3px; pointer-events: none;
+      white-space: pre-line;
+    }
+    #status {
+      position: absolute; inset: 0; z-index: 5; display: grid; place-items: center;
+      color: #222; background: #eef2f4;
+    }
+    .maplibregl-ctrl-attrib { font-size: 10px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="overlay">Preparing 3D view…</div>
+  <div id="status">Preparing 3D view…</div>
+  <script src="maplibre-gl.js"></script>
+  <script>
+    'use strict';
+    // A lister preview needs predictable memory more than maximum tile throughput.
+    maplibregl.workerCount = 1;
+    maplibregl.maxParallelImageRequests = 4;
+
+    let map = null;
+    let payload = null;
+    let selectedTrack = -1;
+    let highlighted = null;
+    let slopeEnabled = false;
+    let lastHoverMessage = '';
+    let interactionCleanup = null;
+    const trackLayers = [];
+    const pointLayerId = 'gpx-hit-points';
+
+    function post(message) {
+      if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(message);
+    }
+
+    function escapeText(value) {
+      return String(value == null ? '' : value);
+    }
+
+    function routeColour(index) {
+      const colours = ['#d92638', '#005fe6', '#159447', '#a245d1', '#e37900', '#008d99'];
+      return colours[index % colours.length];
+    }
+
+    function slopeColour(grade) {
+      if (grade > 8) return '#cc2020';
+      if (grade > 2) return '#e49900';
+      if (grade < -2) return '#0066cc';
+      return '#16a34a';
+    }
+
+    function distanceMetres(a, b) {
+      const rad = Math.PI / 180;
+      const dLat = (b[1] - a[1]) * rad;
+      const dLon = (b[0] - a[0]) * rad;
+      const lat1 = a[1] * rad;
+      const lat2 = b[1] * rad;
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+      return 6371000 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+    }
+
+    function gradientExpression(points, fallback) {
+      if (!slopeEnabled || points.length < 2) return fallback;
+      const expression = ['interpolate', ['linear'], ['line-progress'], 0, fallback];
+      const stride = Math.max(1, Math.ceil(points.length / 96));
+      for (let i = stride; i < points.length; i += stride) {
+        const previous = points[Math.max(0, i - stride)];
+        const current = points[i];
+        const horizontal = Math.max(1, distanceMetres(previous, current));
+        const grade = ((current[2] || 0) - (previous[2] || 0)) / horizontal * 100;
+        expression.push(Math.min(1, i / (points.length - 1)), slopeColour(grade));
+      }
+      expression.push(1, slopeColour(0));
+      return expression;
+    }
+
+    function disposeMap() {
+      if (interactionCleanup) {
+        interactionCleanup();
+        interactionCleanup = null;
+      }
+      highlighted = null;
+      lastHoverMessage = '';
+      trackLayers.length = 0;
+      if (map) {
+        try { map.remove(); } catch (_) {}
+        map = null;
+      }
+      payload = null;
+      document.getElementById('map').replaceChildren();
+      document.getElementById('overlay').textContent = '';
+      document.getElementById('status').style.display = 'grid';
+      document.getElementById('status').textContent = '3D view suspended';
+    }
+
+    function terrainSource(configuration) {
+      if (configuration.provider === 'maptiler') {
+        return {
+          type: 'raster-dem', url: configuration.terrainUrl,
+          tileSize: 512, maxzoom: 14, encoding: 'mapbox'
+        };
+      }
+      return {
+        type: 'raster-dem', tiles: [configuration.terrainUrl],
+        tileSize: 256, maxzoom: 15, encoding: 'terrarium',
+        attribution: 'Elevation © Mapzen / AWS Open Data'
+      };
+    }
+
+    function createStyle(configuration) {
+      return {
+        version: 8,
+        sources: {
+          basemap: {
+            type: 'raster', tiles: [configuration.basemapUrl], tileSize: 256,
+            maxzoom: 19, attribution: configuration.attribution || ''
+          }
+        },
+        layers: [{
+          id: 'basemap', type: 'raster', source: 'basemap',
+          layout: { visibility: configuration.tilesEnabled ? 'visible' : 'none' }
+        }]
+      };
+    }
+
+    function allPointFeatures() {
+      const features = [];
+      payload.tracks.forEach((track, trackIndex) => {
+        track.points.forEach(point => {
+          features.push({
+            type: 'Feature',
+            properties: {
+              track: trackIndex, point: point[4], name: track.name,
+              elevation: point[2], speed: point[3] == null ? -1 : point[3],
+              time: point[5] || ''
+            },
+            geometry: { type: 'Point', coordinates: [point[0], point[1]] }
+          });
+        });
+      });
+      return { type: 'FeatureCollection', features };
+    }
+
+    function addTracks() {
+      payload.tracks.forEach((track, index) => {
+        const sourceId = `gpx-track-${index}`;
+        const layerId = `gpx-track-line-${index}`;
+        const coordinates = track.points.map(point => [point[0], point[1], point[2] || 0]);
+        map.addSource(sourceId, {
+          type: 'geojson', lineMetrics: true,
+          data: { type: 'Feature', properties: { track: index }, geometry: { type: 'LineString', coordinates } }
+        });
+        map.addLayer({
+          id: layerId, type: 'line', source: sourceId,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-width': ['interpolate', ['linear'], ['zoom'], 7, 2, 14, Math.max(3, payload.lineWidth)],
+            'line-opacity': .96,
+            'line-color': gradientExpression(track.points, routeColour(index))
+          }
+        });
+        trackLayers.push(layerId);
+      });
+
+      map.addSource('gpx-points', { type: 'geojson', data: allPointFeatures() });
+      map.addLayer({
+        id: pointLayerId, type: 'circle', source: 'gpx-points',
+        // Keep geometry queryable for hover/click without drawing thousands of overlapping circles.
+        paint: { 'circle-radius': 11, 'circle-color': '#000', 'circle-opacity': 0, 'circle-stroke-width': 0 }
+      });
+
+      const waypointFeatures = payload.waypoints.map((waypoint, index) => ({
+        type: 'Feature', properties: { index, name: waypoint[3], symbol: waypoint[4], elevation: waypoint[2] },
+        geometry: { type: 'Point', coordinates: [waypoint[0], waypoint[1], waypoint[2] || 0] }
+      }));
+      map.addSource('gpx-waypoints', { type: 'geojson', data: { type: 'FeatureCollection', features: waypointFeatures } });
+      map.addLayer({
+        id: 'gpx-waypoints-layer', type: 'circle', source: 'gpx-waypoints',
+        paint: { 'circle-radius': 6, 'circle-color': '#ffd21f', 'circle-stroke-color': '#222', 'circle-stroke-width': 1.5 }
+      });
+
+      map.addSource('gpx-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'gpx-highlight-layer', type: 'circle', source: 'gpx-highlight',
+        paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-color': '#e11d35', 'circle-stroke-width': 3 }
+      });
+      applyTrackSelection();
+    }
+
+    function applyTrackSelection() {
+      if (!map || !map.isStyleLoaded()) return;
+      trackLayers.forEach((layerId, index) => {
+        map.setLayoutProperty(layerId, 'visibility', selectedTrack < 0 || selectedTrack === index ? 'visible' : 'none');
+      });
+      if (map.getLayer(pointLayerId)) {
+        map.setFilter(pointLayerId, selectedTrack < 0 ? null : ['==', ['get', 'track'], selectedTrack]);
+      }
+      const track = selectedTrack >= 0 ? payload.tracks[selectedTrack] : null;
+      document.getElementById('overlay').textContent = track ? track.summary : payload.summary;
+    }
+
+    function updateOverlay(feature, lngLat) {
+      if (!feature) {
+        const track = selectedTrack >= 0 ? payload.tracks[selectedTrack] : null;
+        document.getElementById('overlay').textContent = track ? track.summary : payload.summary;
+        return;
+      }
+      const p = feature.properties;
+      const speed = Number(p.speed) >= 0 ? ` | ${Number(p.speed).toFixed(1)} km/h` : '';
+      const time = p.time ? `\n${new Date(Number(p.time) * 1000).toLocaleString()}` : '';
+      document.getElementById('overlay').textContent =
+        `${escapeText(p.name)}\n${lngLat.lat.toFixed(6)}, ${lngLat.lng.toFixed(6)} | ${Number(p.elevation).toFixed(1)} m${speed}${time}`;
+    }
+
+    function wireInteractions() {
+      const canvas = map.getCanvas();
+      let modifierDrag = null;
+
+      const finishModifierDrag = () => {
+        if (!modifierDrag) return;
+        modifierDrag = null;
+        canvas.style.cursor = '';
+      };
+      const startModifierDrag = event => {
+        if (event.button !== 0 || (!event.ctrlKey && !event.shiftKey)) return;
+        modifierDrag = {
+          x: event.clientX, y: event.clientY,
+          bearing: map.getBearing(), pitch: map.getPitch()
+        };
+        canvas.style.cursor = 'grabbing';
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+      const moveModifierDrag = event => {
+        if (!modifierDrag) return;
+        map.jumpTo({
+          bearing: modifierDrag.bearing + (event.clientX - modifierDrag.x) * 0.45,
+          pitch: Math.max(0, Math.min(85, modifierDrag.pitch - (event.clientY - modifierDrag.y) * 0.35))
+        });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+      const handleKey = event => {
+        const key = event.key;
+        if (key === 'n' || key === 'N') {
+          map.easeTo({ bearing: 0, duration: 250 });
+        } else if (key === 'u' || key === 'U') {
+          map.easeTo({ pitch: 0, duration: 250 });
+        } else if (event.code === 'Space') {
+          map.stop();
+        } else {
+          const upper = key.length === 1 ? key.toUpperCase() : key;
+          const applicationKey = 'ADEFGIMSTV'.includes(upper);
+          const copyKey = event.ctrlKey && (upper === 'C' || key === 'Insert');
+          if (!applicationKey && !copyKey) return;
+          const virtualKey = key === 'Insert' ? 45 : upper.charCodeAt(0);
+          post(`key|${virtualKey}|${event.shiftKey ? 1 : 0}|${event.ctrlKey ? 1 : 0}`);
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+
+      canvas.addEventListener('mousedown', startModifierDrag, true);
+      window.addEventListener('mousemove', moveModifierDrag, true);
+      window.addEventListener('mouseup', finishModifierDrag, true);
+      window.addEventListener('blur', finishModifierDrag);
+      document.addEventListener('keydown', handleKey, true);
+      interactionCleanup = () => {
+        canvas.removeEventListener('mousedown', startModifierDrag, true);
+        window.removeEventListener('mousemove', moveModifierDrag, true);
+        window.removeEventListener('mouseup', finishModifierDrag, true);
+        window.removeEventListener('blur', finishModifierDrag);
+        document.removeEventListener('keydown', handleKey, true);
+      };
+
+      map.on('mousemove', event => {
+        const hits = map.queryRenderedFeatures(event.point, { layers: [pointLayerId] });
+        const feature = hits.length ? hits[0] : null;
+        map.getCanvas().style.cursor = feature ? 'pointer' : '';
+        if (feature) {
+          const message = `hover|${feature.properties.track}|${feature.properties.point}`;
+          if (message !== lastHoverMessage) {
+            lastHoverMessage = message;
+            post(message);
+          }
+          updateOverlay(feature, event.lngLat);
+        } else if (lastHoverMessage) {
+          lastHoverMessage = '';
+          post('hover|-1|-1');
+          updateOverlay(null, event.lngLat);
+        }
+      });
+
+      map.on('click', event => {
+        const hits = map.queryRenderedFeatures(event.point, { layers: [pointLayerId] });
+        if (!hits.length) return;
+        const feature = hits[0];
+        post(`select|${feature.properties.track}|${feature.properties.point}`);
+      });
+
+      map.on('contextmenu', event => {
+        event.preventDefault();
+        post('context');
+      });
+
+      map.on('moveend', () => {
+        const center = map.getCenter();
+        post(`camera|${center.lng}|${center.lat}|${map.getZoom()}|${map.getPitch()}|${map.getBearing()}`);
+      });
+
+    }
+
+    function fitTrack() {
+      if (!map || !payload) return;
+      let bounds = null;
+      payload.tracks.forEach((track, index) => {
+        if (selectedTrack >= 0 && selectedTrack !== index) return;
+        track.points.forEach(point => {
+          if (!bounds) bounds = new maplibregl.LngLatBounds([point[0], point[1]], [point[0], point[1]]);
+          else bounds.extend([point[0], point[1]]);
+        });
+      });
+      if (bounds) map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 });
+    }
+
+    function buildMap(configuration) {
+      disposeMap();
+      payload = configuration;
+      selectedTrack = configuration.selectedTrack;
+      slopeEnabled = configuration.slopeEnabled;
+      document.getElementById('status').textContent = 'Loading map and terrain…';
+
+      map = new maplibregl.Map({
+        container: 'map', style: createStyle(configuration),
+        center: configuration.center, zoom: configuration.zoom,
+        pitch: configuration.model === 1 ? 55 : 62, bearing: 0, maxPitch: 85,
+        pixelRatio: 1, attributionControl: true, maxTileCacheSize: 16, maxTileCacheZoomLevels: 2,
+        cancelPendingTileRequestsWhileZooming: true, fadeDuration: 0, collectResourceTiming: false
+      });
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+      map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
+
+      let reportedTerrainFailure = false;
+      map.on('error', event => {
+        const message = event && event.error ? String(event.error.message || event.error) : 'Unknown rendering error';
+        const terrainSourceFailed = event && event.sourceId === 'terrain-dem';
+        const unattributedTerrainFailure = (!event || !event.sourceId) && /terrain|dem|401|403|404/i.test(message);
+        if (configuration.model === 2 && !reportedTerrainFailure &&
+            (terrainSourceFailed || unattributedTerrainFailure)) {
+          reportedTerrainFailure = true;
+          post(`error|${message.substring(0, 300)}`);
+        }
+      });
+
+      map.on('load', () => {
+        try {
+          map.resize();
+          const mapBounds = map.getContainer().getBoundingClientRect();
+          if (mapBounds.width < 100 || mapBounds.height < 100) {
+            throw new Error(`3D map viewport is too small (${Math.round(mapBounds.width)}x${Math.round(mapBounds.height)})`);
+          }
+          if (configuration.model === 2) {
+            map.addSource('terrain-dem', terrainSource(configuration));
+            map.setTerrain({ source: 'terrain-dem', exaggeration: configuration.exaggeration });
+            map.addLayer({
+              id: 'terrain-hillshade', type: 'hillshade', source: 'terrain-dem',
+              paint: { 'hillshade-exaggeration': .35 }
+            });
+          }
+          addTracks();
+          wireInteractions();
+          fitTrack();
+          document.getElementById('status').style.display = 'none';
+          post('ready');
+        } catch (error) {
+          post(`error|${String(error && error.message ? error.message : error).substring(0, 300)}`);
+        }
+      });
+    }
+
+    window.gpxSetData = buildMap;
+    window.gpxDispose = disposeMap;
+    window.addEventListener('beforeunload', disposeMap);
+    window.gpxFit = fitTrack;
+    window.gpxSelectTrack = function(index) {
+      selectedTrack = Number(index);
+      applyTrackSelection();
+      fitTrack();
+    };
+    window.gpxSetSlope = function(enabled) {
+      slopeEnabled = Boolean(enabled);
+      if (!map || !payload) return;
+      payload.tracks.forEach((track, index) => {
+        const layer = trackLayers[index];
+        if (map.getLayer(layer)) map.setPaintProperty(layer, 'line-color', gradientExpression(track.points, routeColour(index)));
+      });
+    };
+    window.gpxHighlight = function(trackIndex, originalPointIndex, focus) {
+      if (!map || !payload || trackIndex < 0 || trackIndex >= payload.tracks.length) return;
+      const points = payload.tracks[trackIndex].points;
+      let point = points.find(candidate => candidate[3] === originalPointIndex);
+      if (!point && points.length) {
+        point = points.reduce((best, candidate) =>
+          Math.abs(candidate[3] - originalPointIndex) < Math.abs(best[3] - originalPointIndex) ? candidate : best, points[0]);
+      }
+      if (!point) return;
+      highlighted = [trackIndex, originalPointIndex];
+      const source = map.getSource('gpx-highlight');
+      if (source) source.setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [point[0], point[1], point[2] || 0] } });
+      if (focus) map.easeTo({ center: [point[0], point[1]], zoom: Math.max(map.getZoom(), 15), duration: 350 });
+    };
+  </script>
+</body>
+</html>

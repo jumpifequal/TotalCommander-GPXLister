@@ -4,11 +4,12 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
-**Latest release:** `v2.7.1` adds reverse map style cycling with `Shift+T`, so adjacent styles such as Standard and Topo can be compared quickly.
+**Latest release:** `v2.8` adds optional perspective and real DEM terrain views while preserving the native flat 2D startup view.
 
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
+- **Optional 3D Rendering**: Press `D` for perspective or real terrain according to `3d_model`; Terrarium works without a key and MapTiler is supported with an API key.
 - **FIT Support**: `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **KML/KMZ Support**: `.kml` and `.kmz` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **Map Style Cycle**: Switch forward through configured map styles with `T`, backward with `Shift+T`, or choose a style directly from the map context menu.
@@ -32,14 +33,18 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 ## Installation (Total Commander 10/11+)
 
-1. Copy `GPXLister.wlx` and/or `GPXLister.wlx64` to your plugin directory, together with `Fit2Gpx.exe` if you want `.fit` support and `kml2gpx.exe` if you want `.kml` and `.kmz` support.
+1. Copy `GPXLister.wlx` and/or `GPXLister.wlx64` to your plugin directory. Keep the built `web` folder beside the plugin for 3D support. Add `Fit2Gpx.exe` for `.fit` support and `kml2gpx.exe` for `.kml`/`.kmz` support.
 2. Add the DLL as a Lister plugin in Total Commander settings.
 3. Recommended Detect String: `EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"`
+
+3D mode uses the Microsoft Edge WebView2 Runtime. Current Windows 10/11 installations normally already include it; otherwise install the Evergreen Runtime from [Microsoft's WebView2 page](https://developer.microsoft.com/en-us/microsoft-edge/webview2). GPXLister's native loader is linked into the plugin, so no separate `WebView2Loader.dll` is needed. If the runtime is unavailable, GPXLister remains in flat 2D.
 
 ## Controls & Shortcuts
 
 - **Zoom**: Mouse wheel or `+`/`-` keys (zooms toward cursor).
 - **Pan**: Left-click drag or **Arrow Keys**.
+- **3D view**: Press `D` or choose **3D view (D)** from the map context menu. Every file still opens in flat 2D.
+- **3D navigation**: Left-drag pans, wheel or `+`/`-` zooms, right-drag or `Ctrl`/`Shift`+left-drag rotates and pitches, arrows pan, `Shift`+arrows rotate/pitch, `N` points north, `U` returns top-down, and `F` fits the track.
 - **Fit to Window**: Press `F` or **Double-click** (fits the selected track or all tracks; `F` is handled reliably through Total Commander's Lister command path).
 - **Sidebar**: Drag the right edge to resize; select tracks to filter the view.
 - **Toggles**:
@@ -51,7 +56,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
   - `V`: Speed profile on/off (saved to `showSpeedProfile` in the INI file).
   - `S`: Slope-based track colouring on/off.
 - **Information**: `I` opens the summary dialog.
-- **Map context menu**: right-click the map to choose the map style, add extra track files, fit the view, toggle overlays, open the track summary, or copy the view to the clipboard.
+- **Map context menu**: right-click the map in 2D or 3D to switch view, choose the map style, add tracks, fit, toggle overlays, open the summary, or copy the view.
 - **Copy view**: `Ctrl+C` and `Ctrl+Ins` copy the current visible Lister view to the clipboard as PNG. The same action is available from the map right-click context menu as **Copy view to clipboard (Ctrl+C)**.
 - **Hover**: Move the mouse over the map track or profile to see synchronised crosshairs/position lines.
 
@@ -67,6 +72,12 @@ You can place a `GPXLister.ini` file in the same directory as the plugin binarie
 - `standardTileEndpoint` (string, default OpenStreetMap): URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.
 - `satelliteTileEndpoint` (string, default Google satellite): URL template for the satellite map style.
 - `topoTileEndpoint` (string, default OpenTopoMap): URL template for the topo map style.
+- `3d_model` (int, default `2`): Preferred renderer used only after the user requests 3D. `1` is perspective; `2` is real DEM terrain. Missing or invalid values are written back as `2`.
+- `terrainProvider` (string, default `terrarium`): `terrarium` for the free AWS/Mapzen endpoint or `maptiler` for MapTiler Terrain RGB.
+- `terrariumTerrainEndpoint` (string): Terrarium XYZ elevation URL template.
+- `mapTilerTerrainEndpoint` (string): MapTiler Terrain RGB TileJSON URL; `{key}` is replaced with `mapTilerApiKey`.
+- `mapTilerApiKey` (string): Required when the MapTiler endpoint contains `{key}`.
+- `terrainExaggeration` (float, default `1.0`): Vertical terrain scale, clamped to `0.1` through `5.0`.
 - `fitConverter` (string, default `Fit2Gpx.exe`): Converter executable for `.fit` files. Relative names are searched in the plugin folder first, then in `PATH`.
 - `fitArgs` (string, default `{input} {output} --elevation-dataset srtm30m,eudem25m`): Fit2Gpx command-line template. Supported placeholders are `{converter}`, `{input}`, and `{output}`.
 - `fitTimeoutSec` (int, default `60`): Maximum conversion time before the converter is terminated and an error is shown.
@@ -87,8 +98,26 @@ mapTypeOrder=standard,satellite,topo
 standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
 topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
-userAgent=GPXLister/2.7.1
+userAgent=GPXLister/2.8
 ```
+
+## 3D Terrain Providers
+
+The default real-terrain service is the public Terrarium dataset on AWS Open Data. It needs no API key and is the recommended free default. MapTiler Terrain RGB is fully supported through TileJSON and requires a MapTiler key/plan. Provider availability, quotas, attribution, and commercial-use terms remain controlled by the provider.
+
+```ini
+3d_model=2
+terrainProvider=terrarium
+terrariumTerrainEndpoint=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+terrainExaggeration=1.0
+
+; Alternative:
+;terrainProvider=maptiler
+;mapTilerTerrainEndpoint=https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key={key}
+;mapTilerApiKey=YOUR_KEY
+```
+
+The visual comparison, rendering expectations, and endpoint examples are collected in the single [Tile endpoints and 3D rendering guide](TileEndPoint_rendering_samples/README.md).
 
 | Provider                    | INI endpoint example                                                                                                                                                | Pros                                                                                                  | Cons and limits                                                                                                                                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

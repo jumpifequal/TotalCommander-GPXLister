@@ -1,21 +1,50 @@
-﻿# Tile Endpoint Rendering Samples
+# Tile Endpoints and 3D Rendering
 
-Generated for the same area and zoom so the visual style differences are easy to compare.
+This is the single reference for GPXLister map endpoints and the rendering result selected by `3d_model`.
 
-- Center: latitude 46.5405, longitude 12.1357
-- Zoom: 13
-- Tile grid: 3x3 tiles, 768x768 px
-- Center tile: z 13, x 4372, y 2896
-- User-Agent used by generator: GPXLister-doc-sample/1.0
+![Flat 2D, perspective, and real 3D terrain comparison](./3D_modes_comparison.png)
 
-| Image | Endpoint | Notes |
-| --- | --- | --- |
-| `Esri_World_Street_Map_standard_street_map.png` | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}` | Esri, OpenStreetMap contributors, and data providers |
-| `OpenTopoMap_topographic_contours_hillshade.png` | `https://a.tile.opentopomap.org/{z}/{x}/{y}.png` | OpenTopoMap, OpenStreetMap contributors, SRTM |
-| `CARTO_Voyager_clean_street_map.png` | `https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png` | CARTO, OpenStreetMap contributors |
-| `Esri_World_Imagery_satellite.png` | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}` | Esri and imagery data providers |
-| `Esri_World_Topographic_Map.png` | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}` | Esri, OpenStreetMap contributors, and data providers |
+The illustration uses the same fictional alpine track in every panel so the rendering differences are clear:
 
-Providers that require private keys or session creation, such as MapTiler, Thunderforest, Stadia Maps, and the official Google Map Tiles API, are documented in the project README/MANUAL but are not rendered here with placeholder credentials.
+| View                       | How it looks                                                                                                    | Terrain data          | Cost                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------- | --------------------------------------------- |
+| Flat 2D at startup         | Existing north-up Direct2D map with route, waypoints, overlays, and altitude/speed profiles                     | None                  | Lowest                                        |
+| Perspective (`3d_model=1`) | The map is pitched and rotatable, but remains a geometrically flat plane                                        | None                  | Medium                                        |
+| Real 3D (`3d_model=2`)     | The map is draped over a DEM mesh with raised hills and valleys; route, overlays, and profiles remain available | Terrarium or MapTiler | Highest, bounded and released on return to 2D |
+| 3D unavailable             | GPXLister returns automatically to native flat 2D and displays a diagnostic banner                              | Unavailable           | Native 2D only                                |
 
-These samples are for visual comparison and documentation only. Follow each provider's attribution, caching, and usage policy before redistribution.
+Every file opens in flat 2D. The `3d_model` setting only chooses which renderer is started after pressing `D` or selecting **3D view (D)** from the map context menu. A missing or invalid setting is written as `3d_model=2`.
+
+## Real-terrain endpoints
+
+Terrarium is the default and needs no API key:
+
+```ini
+3d_model=2
+terrainProvider=terrarium
+terrariumTerrainEndpoint=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+terrainExaggeration=1.0
+```
+
+MapTiler Terrain RGB is fully supported when a valid key and applicable MapTiler plan are available:
+
+```ini
+3d_model=2
+terrainProvider=maptiler
+mapTilerTerrainEndpoint=https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key={key}
+mapTilerApiKey=YOUR_KEY
+terrainExaggeration=1.0
+```
+
+## 2D basemap endpoint examples
+
+| Style                  | Example endpoint                                                                                 | Notes                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| OpenStreetMap Standard | `https://tile.openstreetmap.org/{z}/{x}/{y}.png`                                                 | Default general-purpose map; observe the OSM tile usage policy |
+| OpenTopoMap            | `https://a.tile.opentopomap.org/{z}/{x}/{y}.png`                                                 | Contours and hill shading; no API key                          |
+| CARTO Voyager          | `https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`                            | Clean raster basemap; check provider terms                     |
+| Esri World Imagery     | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`  | Satellite imagery using ArcGIS `{z}/{y}/{x}` order             |
+| Esri World Topographic | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}` | Topographic raster map using ArcGIS tile order                 |
+| MapTiler satellite     | `https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=YOUR_KEY`                       | Requires a MapTiler API key                                    |
+
+These endpoints are examples, not bundled services. Follow each provider's attribution, caching, rate-limit, and redistribution terms. GPXLister expands direct raster XYZ templates; provider-specific sessions, request headers, and vector-only endpoints are not supported by the native 2D renderer.

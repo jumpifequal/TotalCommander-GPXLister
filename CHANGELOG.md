@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.8 - Optional perspective and real 3D terrain
+
+- Added an optional **3D view (D)** context-menu action and `D` shortcut while keeping flat 2D as the startup view; the numeric `3` key remains available to Total Commander for Lister mode switching.
+- Added `3d_model=1` for perspective rendering and `3d_model=2` for real DEM terrain; a missing or invalid setting is repaired to `2`.
+- Added free Terrarium terrain as the default provider and MapTiler Terrain RGB support through an API key.
+- Kept track names, distance/elevation statistics, cursor elevation/speed/time, waypoints, track filtering, slope colouring, altitude/speed profiles, and profile-to-map point selection available in 3D.
+- Added Google Earth-style combined navigation: drag/wheel/keyboard pan and zoom, right-drag or `Ctrl`/`Shift`+left-drag rotation/pitch, `N` north-up, `U` top-down, and `F` fit.
+- Added safe automatic fallback to flat 2D when WebView2, local assets, or the terrain provider fail.
+- Distribution now includes the local MapLibre web assets required by both 3D modes; only the Microsoft WebView2 Evergreen Runtime may need separate installation.
+- Fixed 3D shortcut routing (including `T`/`Shift+T`) and added reliable `Ctrl`/`Shift`+left-drag rotation and pitch.
+- Fixed black patches caused by overlapping invisible hover targets on dense 3D tracks.
+- Added bounded 3D tile/worker caches and release of the 3D renderer when returning to 2D.
+
 
 ## v2.7.1 - Reverse map style cycling
 

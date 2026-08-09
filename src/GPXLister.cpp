@@ -10,7 +10,11 @@
 #include <cmath>
 #include <cwctype>
 #include <iterator>
+#include <iomanip>
+#include <locale>
+#include <memory>
 #include <mutex> // Added for std::call_once (DPI Fix)
+#include <sstream>
 #include <shlwapi.h>
 
 #define TILE_READY_MSG (WM_APP+1)
@@ -26,7 +30,9 @@
 #define ID_CTX_SHOW_INFO            40008 // Show track summary dialog (keyboard: I)
 #define ID_CTX_PRINTSCREEN          40009 // Copy current Lister view to clipboard (keyboard: Ctrl+C/Ctrl+Ins)
 #define ID_CTX_ADD_TRACK_FILE       40010 // Append additional GPX/FIT/KML/KMZ files to this temporary view
+#define ID_CTX_TOGGLE_3D            40011 // Toggle the preferred 3D renderer (keyboard: D)
 #define ID_CTX_MAP_STYLE_BASE       40100 // First dynamic map style command identifier
+#define GPXLISTER_QUERY_RENDER_MODE (WM_APP + 30) // Harness probe: 0=2D, 1=loading, 11/12=ready model
 
 #define ID_MAX_CYCLING_SPEED        150.0 // km/h - used for speed profile scaling
 
@@ -43,6 +49,7 @@ static const double kElevationProfileSmoothingRadiusM = 125.0;
 #include "TileCache.h"
 #include "Ini.h"
 #include "SlopeColouring.h"
+#include "Terrain3D.h"
 
 // DPI awareness constants fallbacks for older SDKs
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -180,6 +187,9 @@ static UINT GetWindowDpiSafe(HWND hwnd) {
 // Forward declarations for Sidebar support
 static void UpdateSidebarContent(struct State& s);
 static void OnSidebarSelChange(struct State& s);
+static void Refresh3DView(struct State& s);
+static void Update3DLayout(struct State& s);
+static void Toggle3DView(struct State& s);
 
 // Helper to format Unix timestamp into localized OS date and time string.
 static std::wstring FormatTimestampLocal(double unixTime) {
@@ -471,6 +481,8 @@ struct State {
 
     int hoverTrackIdx = -1; // Index of the track containing the hovered point
     int hoverPointIdx = -1; // Index of the point within that track
+    int selectedPointTrackIdx = -1; // Persistent point selected from a profile or the 3D map.
+    int selectedPointIdx = -1;
     POINT mousePos = { 0, 0 }; // Persist mouse position for OnPaint (Physical Coords)
 
     // D2D/DWrite/WIC
@@ -501,6 +513,13 @@ struct State {
     bool resizingSidebar = false; // resize interaction state
     std::wstring fileDisplayName; // GPX file stem used as a fallback display name
     bool trackNamesIncludeFileStem = false; // True after an append operation disambiguates sidebar labels by source file.
+
+    // The default renderer remains native 2D. WebView2 is created lazily after a 3D request.
+    std::shared_ptr<Terrain3DView> terrain3d;
+    bool terrain3dActive = false;
+    bool terrain3dLoading = false;
+    bool terrain3dFailure = false; // Retained for the harness probe after automatic 2D fallback.
+    std::wstring terrain3dError;
 };
 
 static int MinSidebarWidthPx(const State& s) {
@@ -532,6 +551,7 @@ static void ApplyMapTypeIndex(State& s, int index) {
         s.cache->UpdateEndpoint(CurrentMapEndpoint(s));
         s.cache->Clear();
     }
+    if (s.terrain3dActive) Refresh3DView(s);
     InvalidateRect(s.hwnd, NULL, FALSE);
 }
 
@@ -2429,6 +2449,49 @@ static void DrawWaypoints(const State& s) {
     }
 }
 
+static void DrawSelectedPoint(State& s) {
+    const int trackIndex = s.selectedPointTrackIdx;
+    const int pointIndex = s.selectedPointIdx;
+    if (trackIndex < 0 || trackIndex >= (int)s.tracks.size()) return;
+    const auto& track = s.tracks[(size_t)trackIndex];
+    if (pointIndex < 0 || pointIndex >= (int)track.pts.size()) return;
+    if (s.selectedTrack != -1 && s.selectedTrack != trackIndex) return;
+
+    RECT rc{};
+    GetClientRect(s.hwnd, &rc);
+    const float dipBottom = (float)rc.bottom / s.dpiScale;
+    const float dipRight = (float)rc.right / s.dpiScale;
+    const float dipOffset = s.tracks.size() > 1 ? (float)s.sidebarWidth / s.dpiScale : 0.0f;
+    const float mapWidth = dipRight - dipOffset;
+
+    if (!s.terrain3dActive) {
+        const float mapHeight = dipBottom - ProfileReservedHeight(s);
+        const auto& point = track.pts[(size_t)pointIndex];
+        const float x = (float)(lon2x(point.lon, s.zoom) - (s.cx - mapWidth / 2.0) + dipOffset);
+        const float y = (float)(lat2y(point.lat, s.zoom) - (s.cy - mapHeight / 2.0));
+        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::OrangeRed));
+        s.rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x, y), 8.0f, 8.0f), s.brush, 2.5f);
+    }
+
+    if (!IsProfileVisible(s)) return;
+    double totalDistance = 0.0;
+    double selectedDistance = 0.0;
+    for (size_t i = 0; i < s.tracks.size(); ++i) {
+        if (s.selectedTrack != -1 && s.selectedTrack != (int)i) continue;
+        if ((int)i == trackIndex && pointIndex < (int)s.tracks[i].cumDist.size()) {
+            selectedDistance = totalDistance + s.tracks[i].cumDist[(size_t)pointIndex];
+        }
+        totalDistance += s.tracks[i].stats.distance;
+    }
+    const float plotWidth = mapWidth - 60.0f;
+    if (totalDistance > 0.0 && plotWidth > 0.0f) {
+        const float x = dipOffset + 50.0f + (float)(selectedDistance / totalDistance * plotWidth);
+        s.brush->SetColor(D2D1::ColorF(0.9f, 0.1f, 0.15f, 0.85f));
+        s.rt->DrawLine(D2D1::Point2F(x, dipBottom - s.profileHeight),
+                       D2D1::Point2F(x, dipBottom), s.brush, 2.0f);
+    }
+}
+
 static void OnPaint(State& s) {
     EnsureRT(s);
     if (!s.rt) return;
@@ -2450,19 +2513,25 @@ static void OnPaint(State& s) {
     D2D1_POINT_2F dipMouse = { (float)s.mousePos.x / s.dpiScale, (float)s.mousePos.y / s.dpiScale };
 
     s.rt->Clear(D2D1::ColorF(1, 1, 1, 1));
-    DrawTiles(s); // Uses dipOffset and dipRight internally
-    DrawTrack(s); // Uses dipOffset and dipRight internally
-
-    //Draw Waypoints on top of tracks
-    DrawWaypoints(s);
-
-    //Draw Grid Overlay (if enabled)
-    DrawScale(s);
-
-    POINT pt; GetCursorPos(&pt); ScreenToClient(s.hwnd, &pt); // physical for DrawCoords
-    DrawCoords(s, pt);
-    DrawAttribution(s);
+    if (!s.terrain3dActive) {
+        DrawTiles(s); // Uses dipOffset and dipRight internally
+        DrawTrack(s); // Uses dipOffset and dipRight internally
+        DrawWaypoints(s);
+        DrawScale(s);
+        POINT pt; GetCursorPos(&pt); ScreenToClient(s.hwnd, &pt); // physical for DrawCoords
+        DrawCoords(s, pt);
+        DrawAttribution(s);
+        if (!s.terrain3dError.empty()) {
+            D2D1_RECT_F errorRect = D2D1::RectF(dipOffset + 8.0f, 8.0f,
+                                                (std::min)(dipRight - 8.0f, dipOffset + 570.0f), 58.0f);
+            FillTextBackdrop(s, errorRect);
+            s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::DarkRed));
+            const std::wstring message = L"3D view unavailable; using flat 2D. " + s.terrain3dError;
+            s.rt->DrawTextW(message.c_str(), (UINT32)message.size(), s.tf, errorRect, s.brush);
+        }
+    }
     DrawElevationProfile(s);
+    DrawSelectedPoint(s);
 
     //Direct Point Access Logic (Tooltips)
     const GpxPoint* hp = nullptr;
@@ -2679,6 +2748,41 @@ static void OnSize(State& s, int w, int h) {
     else {
         if (s.rt) s.rt->Resize(D2D1::SizeU(w, h));
     }
+    Update3DLayout(s);
+}
+
+static bool FindProfilePointAtX(const State& s, float dipX, int& trackIndex, int& pointIndex) {
+    RECT rc{};
+    GetClientRect(s.hwnd, &rc);
+    const float dipRight = (float)rc.right / s.dpiScale;
+    const float dipOffset = s.tracks.size() > 1 ? (float)s.sidebarWidth / s.dpiScale : 0.0f;
+    const float plotWidth = (dipRight - dipOffset) - 60.0f;
+    if (plotWidth <= 0.0f) return false;
+
+    double totalDistance = 0.0;
+    for (size_t i = 0; i < s.tracks.size(); ++i) {
+        if (s.selectedTrack == -1 || s.selectedTrack == (int)i) totalDistance += s.tracks[i].stats.distance;
+    }
+    if (totalDistance <= 0.0) return false;
+
+    const double targetDistance = ((double)dipX - dipOffset - 50.0) / plotWidth * totalDistance;
+    if (targetDistance < 0.0 || targetDistance > totalDistance) return false;
+
+    double accumulated = 0.0;
+    for (size_t i = 0; i < s.tracks.size(); ++i) {
+        if (s.selectedTrack != -1 && s.selectedTrack != (int)i) continue;
+        const auto& track = s.tracks[i];
+        if (targetDistance <= accumulated + track.stats.distance) {
+            const double localDistance = targetDistance - accumulated;
+            const auto it = std::lower_bound(track.cumDist.begin(), track.cumDist.end(), localDistance);
+            if (it == track.cumDist.end()) return false;
+            trackIndex = (int)i;
+            pointIndex = (int)std::distance(track.cumDist.begin(), it);
+            return pointIndex >= 0 && pointIndex < (int)track.pts.size();
+        }
+        accumulated += track.stats.distance;
+    }
+    return false;
 }
 
 static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2705,6 +2809,21 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         if (dipMouse.x < dipOffset) break;
+
+        if (IsPointInElevationProfile(s, dipMouse)) {
+            int trackIndex = -1, pointIndex = -1;
+            if (FindProfilePointAtX(s, dipMouse.x, trackIndex, pointIndex)) {
+                s.selectedPointTrackIdx = trackIndex;
+                s.selectedPointIdx = pointIndex;
+                s.hoverTrackIdx = trackIndex;
+                s.hoverPointIdx = pointIndex;
+                if (s.terrain3dActive && s.terrain3d) {
+                    s.terrain3d->HighlightPoint(trackIndex, pointIndex, false);
+                }
+                InvalidateRect(s.hwnd, nullptr, FALSE);
+            }
+            break;
+        }
 
         // 2. Map Panning Initiation
         SetFocus(s.hwnd);
@@ -2968,28 +3087,40 @@ static bool CopyListerViewToClipboard(State& s) {
     return true;
 }
 
-static void OnKey(State& s, WPARAM vk) {
+static void OnKey(State& s, WPARAM vk, LPARAM forwardedModifiers = -1) {
+    const bool shiftPressed = forwardedModifiers >= 0
+        ? (forwardedModifiers & TERRAIN3D_MOD_SHIFT) != 0
+        : (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool controlPressed = forwardedModifiers >= 0
+        ? (forwardedModifiers & TERRAIN3D_MOD_CONTROL) != 0
+        : (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (vk == 'D' || vk == 'd') {
+        Toggle3DView(s);
+        return;
+    }
     if (vk == 'I' || vk == 'i') { // Track summary dialog
         ShowTrackInfoDialog(s);
         return;
     }
 
     if (vk == 'T' || vk == 't') { // Cycle map style; Shift reverses direction
-        const int direction = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
+        const int direction = shiftPressed ? -1 : 1;
         ApplyMapTypeIndex(s, s.currentMapTypeIndex + direction);
         return;
     }
     if (vk == 'F' || vk == 'f') { // Fit to Window
-        FitToWindow(s);
+        if (s.terrain3dActive && s.terrain3d) s.terrain3d->FitTrack();
+        else FitToWindow(s);
         InvalidateRect(s.hwnd, NULL, FALSE);
         return;
     }
-    if ((vk == 'C' || vk == 'c' || vk == VK_INSERT) && (GetKeyState(VK_CONTROL) & 0x8000)) { // Copy current view
+    if ((vk == 'C' || vk == 'c' || vk == VK_INSERT) && controlPressed) { // Copy current view
         CopyListerViewToClipboard(s);
         return;
     }
     if (vk == 'E' || vk == 'e' || vk == 'A' || vk == 'a') { // Toggle Elevation Profile
         s.showElevationProfile = !s.showElevationProfile;
+        Update3DLayout(s);
         InvalidateRect(s.hwnd, NULL, FALSE);
         return;
     }
@@ -2997,16 +3128,20 @@ static void OnKey(State& s, WPARAM vk) {
         s.showSpeedProfile = !s.showSpeedProfile;
         s.opt.showSpeedProfile = s.showSpeedProfile;
         SaveOptionBool(L"showSpeedProfile", s.showSpeedProfile);
+        Update3DLayout(s);
         InvalidateRect(s.hwnd, NULL, FALSE);
         return;
     }
 
     if (vk == 'S' || vk == 's') { // Toggle slope colouring
         s.showSlopeColouringOnTrack = !s.showSlopeColouringOnTrack;
+        if (s.terrain3dActive && s.terrain3d) s.terrain3d->SetSlopeColouring(s.showSlopeColouringOnTrack);
         InvalidateRect(s.hwnd, NULL, FALSE);
+        return;
     }
     if (vk == 'M') {
         s.tiles = !s.tiles;
+        if (s.terrain3dActive) Refresh3DView(s);
         InvalidateRect(s.hwnd, NULL, FALSE);
     }
     else if (vk == 'G') {
@@ -3053,8 +3188,10 @@ static void OnSidebarSelChange(State& s) {
     s.selectedTrack = sel - 1;
     s.hoverTrackIdx = -1; // Clear hover state on selection change
     s.hoverPointIdx = -1;
+    if (s.terrain3dActive && s.terrain3d) s.terrain3d->SelectTrack(s.selectedTrack);
     InvalidateRect(s.hwnd, nullptr, FALSE);
-    SetFocus(s.hwnd);
+    if (s.terrain3dActive && s.terrain3d) s.terrain3d->Focus();
+    else SetFocus(s.hwnd);
 }
 
 // Map view helpers for context menu hit-testing.
@@ -3104,6 +3241,224 @@ static bool IsClientPointInMapView(const State& s, const POINT& clientPt) {
     return true;
 }
 
+static std::wstring JsonEscape(const std::wstring& value) {
+    std::wstring escaped;
+    escaped.reserve(value.size() + 16);
+    for (wchar_t ch : value) {
+        switch (ch) {
+            case L'\\': escaped += L"\\\\"; break;
+            case L'\"': escaped += L"\\\""; break;
+            case L'\r': escaped += L"\\r"; break;
+            case L'\n': escaped += L"\\n"; break;
+            case L'\t': escaped += L"\\t"; break;
+            default:
+                if (ch < 0x20) {
+                    wchar_t code[8]{};
+                    swprintf_s(code, L"\\u%04X", (unsigned int)ch);
+                    escaped += code;
+                }
+                else {
+                    escaped += ch;
+                }
+                break;
+        }
+    }
+    return escaped;
+}
+
+static std::wstring TrackOverlaySummary(const Track& track, const std::wstring& fallbackName) {
+    const std::wstring name = track.name.empty() ? fallbackName : track.name;
+    wchar_t stats[256]{};
+    swprintf_s(stats, L"%s\nDistance: %.2f km | Ascent: +%.0f m | Descent: -%.0f m",
+               name.c_str(), track.stats.distance / 1000.0, track.stats.ascent, track.stats.descent);
+    return stats;
+}
+
+static std::wstring OverallOverlaySummary(const State& s) {
+    wchar_t stats[320]{};
+    swprintf_s(stats, L"%s\nDistance: %.2f km | Ascent: +%.0f m | Descent: -%.0f m | Elevation: %.0f-%.0f m",
+               s.fileDisplayName.empty() ? L"GPX track" : s.fileDisplayName.c_str(),
+               s.totalDist / 1000.0, s.totalAsc, s.totalDesc,
+               std::isfinite(s.minE) ? s.minE : 0.0, std::isfinite(s.maxE) ? s.maxE : 0.0);
+    return stats;
+}
+
+static std::wstring EffectiveTerrainProvider(const Options& options) {
+    std::wstring provider = TrimLower(options.terrainProvider);
+    return provider == L"maptiler" ? L"maptiler" : L"terrarium";
+}
+
+static std::wstring EffectiveTerrainEndpoint(const Options& options) {
+    const std::wstring provider = EffectiveTerrainProvider(options);
+    std::wstring endpoint = provider == L"maptiler"
+        ? options.mapTilerTerrainEndpoint
+        : options.terrariumTerrainEndpoint;
+    if (provider == L"maptiler") ReplaceAll(endpoint, L"{key}", options.mapTilerApiKey);
+    return endpoint;
+}
+
+static std::wstring BuildTerrain3DPayload(const State& s) {
+#ifdef _WIN64
+    constexpr size_t totalPointBudget = 24000;
+#else
+    constexpr size_t totalPointBudget = 12000;
+#endif
+    size_t totalPoints = 0;
+    for (const auto& track : s.tracks) totalPoints += track.pts.size();
+
+    const std::wstring provider = EffectiveTerrainProvider(s.opt);
+    const std::wstring terrainEndpoint = EffectiveTerrainEndpoint(s.opt);
+    const std::wstring basemapEndpoint = CurrentMapEndpoint(s);
+    const double centerLon = x2lon(s.cx, s.zoom);
+    const double centerLat = y2lat(s.cy, s.zoom);
+
+    std::wostringstream json;
+    json.imbue(std::locale::classic());
+    json << std::setprecision(8)
+         << L"{\"model\":" << s.opt.preferred3dModel
+         << L",\"provider\":\"" << JsonEscape(provider) << L"\""
+         << L",\"terrainUrl\":\"" << JsonEscape(terrainEndpoint) << L"\""
+         << L",\"basemapUrl\":\"" << JsonEscape(basemapEndpoint) << L"\""
+         << L",\"attribution\":\"" << JsonEscape(s.cache ? s.cache->Attribution() : L"") << L"\""
+         << L",\"exaggeration\":" << s.opt.terrainExaggeration
+         << L",\"lineWidth\":" << s.trackLineWidth
+         << L",\"slopeEnabled\":" << (s.showSlopeColouringOnTrack ? L"true" : L"false")
+         << L",\"tilesEnabled\":" << (s.tiles ? L"true" : L"false")
+         << L",\"selectedTrack\":" << s.selectedTrack
+         << L",\"summary\":\"" << JsonEscape(OverallOverlaySummary(s)) << L"\""
+         << L",\"center\":[" << centerLon << L"," << centerLat << L"]"
+         << L",\"zoom\":" << s.zoom << L",\"tracks\":[";
+
+    for (size_t ti = 0; ti < s.tracks.size(); ++ti) {
+        if (ti) json << L",";
+        const auto& track = s.tracks[ti];
+        const size_t proportionalBudget = totalPoints == 0
+            ? track.pts.size()
+            : (std::max<size_t>)(2, totalPointBudget * track.pts.size() / totalPoints);
+        const size_t step = track.pts.size() > proportionalBudget
+            ? (track.pts.size() + proportionalBudget - 1) / proportionalBudget
+            : 1;
+        json << L"{\"name\":\"" << JsonEscape(TrackDisplayName(s, (int)ti))
+             << L"\",\"summary\":\"" << JsonEscape(TrackOverlaySummary(track, TrackDisplayName(s, (int)ti)))
+             << L"\",\"points\":[";
+        bool firstPoint = true;
+        for (size_t pi = 0; pi < track.pts.size(); pi += step) {
+            if (!firstPoint) json << L",";
+            firstPoint = false;
+            const auto& point = track.pts[pi];
+            const double speed = pi < track.speed.size() ? track.speed[pi] : -1.0;
+            json << std::setprecision(8) << L"[" << point.lon << L"," << point.lat << L"," << point.ele
+                 << L"," << speed << L"," << pi << L"," << std::setprecision(0) << point.time << L"]";
+        }
+        if (track.pts.size() > 1 && ((track.pts.size() - 1) % step) != 0) {
+            const size_t pi = track.pts.size() - 1;
+            const auto& point = track.pts[pi];
+            const double speed = pi < track.speed.size() ? track.speed[pi] : -1.0;
+            if (!firstPoint) json << L",";
+            json << std::setprecision(8) << L"[" << point.lon << L"," << point.lat << L"," << point.ele
+                 << L"," << speed << L"," << pi << L"," << std::setprecision(0) << point.time << L"]";
+        }
+        json << L"]}";
+    }
+
+    json << L"],\"waypoints\":[";
+    const size_t waypointCount = (std::min<size_t>)(s.waypoints.size(), 2000);
+    for (size_t i = 0; i < waypointCount; ++i) {
+        if (i) json << L",";
+        const auto& waypoint = s.waypoints[i];
+        json << std::setprecision(8) << L"[" << waypoint.lon << L"," << waypoint.lat << L"," << waypoint.ele
+             << L",\"" << JsonEscape(waypoint.name) << L"\",\"" << JsonEscape(waypoint.sym) << L"\"]";
+    }
+    json << L"]}";
+    return json.str();
+}
+
+static void Update3DLayout(State& s) {
+    if (!s.terrain3d) return;
+    RECT mapRect{};
+    if (GetMapViewClientRect(s, mapRect)) s.terrain3d->Resize(mapRect);
+}
+
+static bool CanActivate3D(const State& s, std::wstring& error) {
+    if (s.tracks.empty()) {
+        error = L"No track is available for 3D rendering.";
+        return false;
+    }
+    if (s.opt.preferred3dModel == 2) {
+        const std::wstring provider = EffectiveTerrainProvider(s.opt);
+        const std::wstring endpoint = EffectiveTerrainEndpoint(s.opt);
+        if (endpoint.empty()) {
+            error = L"The terrain endpoint is empty in GPXLister.ini.";
+            return false;
+        }
+        if (provider == L"maptiler" && s.opt.mapTilerApiKey[0] == L'\0' &&
+            std::wstring(s.opt.mapTilerTerrainEndpoint).find(L"{key}") != std::wstring::npos) {
+            error = L"MapTiler terrain requires mapTilerApiKey in GPXLister.ini.";
+            return false;
+        }
+    }
+    return true;
+}
+
+static void Refresh3DView(State& s) {
+    if (!s.terrain3dActive || !s.terrain3d) return;
+    s.terrain3dLoading = true;
+    s.terrain3d->Activate(BuildTerrain3DPayload(s));
+    Update3DLayout(s);
+}
+
+static void Activate3DView(State& s) {
+    std::wstring error;
+    if (!CanActivate3D(s, error)) {
+        MessageBoxW(s.hwnd, error.c_str(), L"GPXLister 3D view", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    s.terrain3dFailure = false;
+    s.terrain3dError.clear();
+    if (!s.terrain3d) {
+        std::wstring assetPath = GetPluginDir();
+        if (!assetPath.empty() && assetPath.back() != L'\\') assetPath += L'\\';
+        assetPath += L"web";
+        RECT bounds{};
+        GetMapViewClientRect(s, bounds);
+        s.terrain3d = Terrain3DView::Create(s.hwnd, bounds, assetPath);
+        if (!s.terrain3d) {
+            MessageBoxW(s.hwnd, L"The 3D view could not be initialised. The flat 2D view remains active.",
+                        L"GPXLister 3D view", MB_OK | MB_ICONWARNING);
+            return;
+        }
+    }
+    s.terrain3dActive = true;
+    s.terrain3dLoading = true;
+    s.terrain3d->Activate(BuildTerrain3DPayload(s));
+    Update3DLayout(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+static void Deactivate3DView(State& s) {
+    if (!s.terrain3dActive) return;
+    if (s.terrain3d) {
+        const auto camera = s.terrain3d->Camera();
+        if (camera.valid) {
+            s.zoom = std::clamp((int)std::lround(camera.zoom), 1, 19);
+            s.cx = lon2x(camera.longitude, s.zoom);
+            s.cy = lat2y(camera.latitude, s.zoom);
+        }
+        // Releasing the controller also tears down its renderer process and bounded tile cache.
+        // This keeps an inactive 2D view from retaining hundreds of MB of WebView working set.
+        s.terrain3d->Shutdown();
+        s.terrain3d.reset();
+    }
+    s.terrain3dActive = false;
+    s.terrain3dLoading = false;
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+static void Toggle3DView(State& s) {
+    if (s.terrain3dActive) Deactivate3DView(s);
+    else Activate3DView(s);
+}
+
 static void ShowAddTrackFileDialog(State& s);
 
 // Show a context menu for map-specific toggles, mirroring existing keyboard shortcuts.
@@ -3112,6 +3467,10 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     if (!hMenu) {
         return;
     }
+    UINT view3dFlags = MF_STRING;
+    if (s.terrain3dActive) view3dFlags |= MF_CHECKED;
+    AppendMenuW(hMenu, view3dFlags, ID_CTX_TOGGLE_3D, L"3D view (D)");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     UINT tilesFlags = MF_STRING;
     if (s.tiles) {
         tilesFlags |= MF_CHECKED;
@@ -3124,6 +3483,9 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
             if ((int)i == s.currentMapTypeIndex) {
                 styleFlags |= MF_CHECKED;
             }
+            if (s.terrain3dActive && s.terrain3d && s.hoverTrackIdx >= 0 && s.hoverPointIdx >= 0) {
+                s.terrain3d->HighlightPoint(s.hoverTrackIdx, s.hoverPointIdx, false);
+            }
             AppendMenuW(hMapStyleMenu, styleFlags, ID_CTX_MAP_STYLE_BASE + (UINT)i, MapTypeLabel(s.mapTypeOrder[i]));
         }
         AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hMapStyleMenu, L"Map style (T)");
@@ -3132,7 +3494,7 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     AppendMenuW(hMenu, MF_STRING, ID_CTX_FIT_TO_WINDOW, L"Fit to window (F)");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    UINT gridFlags = MF_STRING;
+    UINT gridFlags = s.terrain3dActive ? MF_GRAYED : MF_STRING;
     if (s.showGridWhenNoTiles) {
         gridFlags |= MF_CHECKED;
     }
@@ -3170,7 +3532,12 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
     if (cmd == 0) {
         return;
     }
-    SetFocus(s.hwnd);
+    if (s.terrain3dActive && s.terrain3d) s.terrain3d->Focus();
+    else SetFocus(s.hwnd);
+    if (cmd == ID_CTX_TOGGLE_3D) {
+        Toggle3DView(s);
+        return;
+    }
     if (cmd == ID_CTX_TOGGLE_TILES) {
         OnKey(s, 'M');
         return;
@@ -3180,8 +3547,7 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
         return;
     }
     if (cmd == ID_CTX_FIT_TO_WINDOW) {
-        FitToWindow(s);
-        InvalidateRect(s.hwnd, nullptr, FALSE);
+        OnKey(s, 'F');
         return;
     }
     if (cmd == ID_CTX_TOGGLE_GRID) {
@@ -3217,6 +3583,12 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     auto s = reinterpret_cast<State*>(GetWindowLongPtrW(h, GWLP_USERDATA));
     switch (m) {
+    case GPXLISTER_QUERY_RENDER_MODE:
+        if (!s) return 0;
+        if (s->terrain3dFailure) return -1;
+        if (!s->terrain3dActive) return 0;
+        if (s->terrain3dLoading) return 1;
+        return 10 + s->opt.preferred3dModel;
     case WM_COMMAND:
         if (LOWORD(w) == 101 && HIWORD(w) == LBN_SELCHANGE) {
             if (s) OnSidebarSelChange(*s);
@@ -3286,6 +3658,61 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else
                 KillTimer(h, TIMER_DOWNLOAD);
         } break;
+    case TERRAIN3D_READY_MSG:
+        if (s && s->terrain3dActive) {
+            s->terrain3dLoading = false;
+            Update3DLayout(*s);
+            if (s->terrain3d) s->terrain3d->Focus();
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    case TERRAIN3D_FAILED_MSG:
+        if (s && s->terrain3d) {
+            const std::wstring detail = s->terrain3d->LastError();
+            s->terrain3dError = detail;
+            OutputDebugStringW((L"[GPXLister] 3D renderer failed; reverting to flat 2D: " + detail + L"\n").c_str());
+            s->terrain3dActive = false;
+            s->terrain3dLoading = false;
+            s->terrain3dFailure = true;
+            s->terrain3d->Shutdown();
+            s->terrain3d.reset();
+            InvalidateRect(h, nullptr, TRUE);
+        }
+        return 0;
+    case TERRAIN3D_HOVER_MSG:
+        if (s && (int)w == -1 && (int)l == -1) {
+            s->hoverTrackIdx = -1;
+            s->hoverPointIdx = -1;
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        else if (s && (int)w >= 0 && (int)w < (int)s->tracks.size() &&
+            (int)l >= 0 && (int)l < (int)s->tracks[(size_t)w].pts.size()) {
+            s->hoverTrackIdx = (int)w;
+            s->hoverPointIdx = (int)l;
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    case TERRAIN3D_SELECT_MSG:
+        if (s && (int)w >= 0 && (int)w < (int)s->tracks.size() &&
+            (int)l >= 0 && (int)l < (int)s->tracks[(size_t)w].pts.size()) {
+            s->selectedPointTrackIdx = (int)w;
+            s->selectedPointIdx = (int)l;
+            s->hoverTrackIdx = (int)w;
+            s->hoverPointIdx = (int)l;
+            if (s->terrain3d) s->terrain3d->HighlightPoint((int)w, (int)l, false);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    case TERRAIN3D_CONTEXT_MSG:
+        if (s) {
+            POINT screenPoint{};
+            GetCursorPos(&screenPoint);
+            ShowMapContextMenu(*s, screenPoint);
+        }
+        return 0;
+    case TERRAIN3D_KEY_MSG:
+        if (s) OnKey(*s, w, l);
+        return 0;
     case WM_DPICHANGED:
         if (s) {
             UINT newDpiX = (UINT)LOWORD(w);
@@ -3296,6 +3723,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 s->rt->Release();
                 s->rt = nullptr;
             } // Force RT recreation with new DPI
+            Update3DLayout(*s);
             InvalidateRect(h, NULL, TRUE);
         } break;
     case WM_TIMER:
@@ -3324,6 +3752,19 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // Double-click handling for Elevation Profile, zooms to clicked point
         if (IsPointInElevationProfile(*s, dipPt)) {
             if (dipPt.x < dipOffset) break;
+
+            int selectedTrackIndex = -1, selectedPointIndex = -1;
+            if (FindProfilePointAtX(*s, dipPt.x, selectedTrackIndex, selectedPointIndex)) {
+                s->selectedPointTrackIdx = selectedTrackIndex;
+                s->selectedPointIdx = selectedPointIndex;
+                s->hoverTrackIdx = selectedTrackIndex;
+                s->hoverPointIdx = selectedPointIndex;
+                if (s->terrain3dActive && s->terrain3d) {
+                    s->terrain3d->HighlightPoint(selectedTrackIndex, selectedPointIndex, true);
+                    InvalidateRect(h, nullptr, FALSE);
+                    break;
+                }
+            }
 
             float leftPadding = 50.0f, margin = 10.0f;
             float plotW = dipRight - dipOffset - (leftPadding + margin);
@@ -3408,7 +3849,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYDOWN: if (s) { OnKey(*s, w); } break;
     case WM_CHAR: if (s) {
         wchar_t ch = (wchar_t)w;
-        if (ch == L'f' || ch == L'F') { FitToWindow(*s); InvalidateRect(h, NULL, FALSE); }
+        if (ch == L'f' || ch == L'F') OnKey(*s, ch);
     } break;
     case WM_CAPTURECHANGED:
         if (s && (HWND)l != h) {
@@ -3418,6 +3859,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         break;
     case WM_DESTROY:
         if (s) {
+            if (s->terrain3d) { s->terrain3d->Shutdown(); s->terrain3d.reset(); }
             if (s->cache) { s->cache->Stop(); delete s->cache; s->cache = nullptr; }
             if (s->gridDash) { s->gridDash->Release(); s->gridDash = nullptr; }
             if (s->trackStrokeStyle) { s->trackStrokeStyle->Release(); s->trackStrokeStyle = nullptr; }
@@ -3615,9 +4057,12 @@ static void ShowAddTrackFileDialog(State& s) {
     s.selectedTrack = -1;
     s.hoverTrackIdx = -1;
     s.hoverPointIdx = -1;
+    s.selectedPointTrackIdx = -1;
+    s.selectedPointIdx = -1;
     ComputeBounds(s);
     RefreshSidebarAfterTrackAppend(s);
     FitToWindow(s);
+    if (s.terrain3dActive) Refresh3DView(s);
     InvalidateRect(s.hwnd, NULL, TRUE);
 
     if (!failures.empty()) {
@@ -3758,6 +4203,10 @@ int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int Sh
     //Reset hover state for new file to prevent stale index access
     s->hoverTrackIdx = -1;
     s->hoverPointIdx = -1;
+    s->selectedPointTrackIdx = -1;
+    s->selectedPointIdx = -1;
+    s->terrain3dFailure = false;
+    s->terrain3dError.clear();
     s->tracks = std::move(newTracks);
     s->waypoints = std::move(newWaypoints);
     s->selectedTrack = -1;
@@ -3777,6 +4226,7 @@ int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int Sh
     UpdateWindow(ListWin);
     s->zoom = std::clamp(s->opt.initialZoom, 3, 19);
     FitToWindow(*s);
+    if (s->terrain3dActive) Refresh3DView(*s);
     InvalidateRect(ListWin, NULL, TRUE);
     return LISTPLUGIN_OK;
 }
@@ -3810,7 +4260,8 @@ int WINAPI ListSendCommand(HWND ListWin, int Command, int Parameter) {
     if (Command == lc_newparams && (Parameter & lcp_fittowindow) != 0) {
         // Total Commander routes its F shortcut here as a toggled image-view option.
         // For a map view, fit is an action: both toggle directions should re-fit.
-        FitToWindow(*s);
+        if (s->terrain3dActive && s->terrain3d) s->terrain3d->FitTrack();
+        else FitToWindow(*s);
         InvalidateRect(ListWin, nullptr, FALSE);
         SetFocus(ListWin);
     }

@@ -27,6 +27,15 @@ struct Options {
 
     wchar_t mapTypeOrder[128] = L"standard,satellite,topo";
     bool hasMapTypeOrder = false;
+
+    // Preferred renderer used only when the user switches from the default 2D view.
+    // 1 = flat perspective, 2 = real DEM terrain.
+    int preferred3dModel = 2;
+    wchar_t terrainProvider[32] = L"terrarium";
+    wchar_t terrariumTerrainEndpoint[512] = L"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+    wchar_t mapTilerTerrainEndpoint[512] = L"https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key={key}";
+    wchar_t mapTilerApiKey[256] = L"";
+    float terrainExaggeration = 1.0f;
     
 	//default user agent
     wchar_t userAgent[128] = L"GPXLister";

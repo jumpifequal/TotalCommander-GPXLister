@@ -2,12 +2,12 @@
 type=wlx
 name=GPXLister
 title=GPXLister (GPX/FIT/KML/KMZ track viewer)
-description=Direct2D GPX/FIT/KML/KMZ viewer with map tiles, summaries, altitude/speed profiles, and hidden FIT/KML/KMZ-to-GPX conversion
+description=GPX/FIT/KML/KMZ viewer with flat 2D, perspective, real 3D terrain, profiles, summaries, and map tiles
 file=GPXLister.wlx
 defaultdir=GPXLister
 defaultextension=gpx;fit;kml;kmz
 defaultfilter=EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
-version=2.7.1
+version=2.8
 author=jumpifequal
 homepage=https://github.com/jumpifequal/TotalCommander-GPXLister
-notes=Requires Windows 10+. Keep fit2gpx.exe and kml2gpx.exe beside the plugin for FIT,KML,KMZ support
+notes=Requires Windows 10+. Keep the web folder beside the plugin for 3D and converters beside it for FIT,KML,KMZ support

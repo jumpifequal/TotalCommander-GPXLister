@@ -36,7 +36,7 @@
 
 ### A) Manual Installation
 
-1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support and **`kml2gpx.exe`** in the same folder if you want `.kml` and `.kmz` support.
+1. Copy **`x32\Release\GPXLister.wlx`** (and/or **`x64\Release\GPXLister.wlx64`**) to a dedicated folder (e.g. `%COMMANDER_PATH%\Plugins\WLX\GPXLister\`). Copy the complete **`web`** folder beside the plugin for 3D support. Keep **`Fit2Gpx.exe`** in the same folder if you want `.fit` support and **`kml2gpx.exe`** in the same folder if you want `.kml` and `.kmz` support.
 2. In **Total Commander**: Navigate to `Configuration -> Options... -> Plugins -> Lister plugins (WLX) -> Add...`.
 3. Select the plugin binary and confirm the detect string.
 4. *(Optional)* Place a customised **`GPXLister.ini`** in the same folder as the plugin.
@@ -48,6 +48,8 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 ## 4) Usage & Controls
 
 ### Keyboard Shortcuts
+
+- **D / d** - Toggle between the default flat 2D view and the preferred 3D renderer from `3d_model`.
 
 - **Arrow Keys** - Pan the map.
 
@@ -77,6 +79,10 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 
 - **Left-drag** - Pan the map.
 
+- **3D rotate/pitch** - Right-drag, or hold **Ctrl** or **Shift** while left-dragging. `Shift`+arrow keys provide keyboard rotation/pitch.
+
+- **3D orientation** - Press **N** for north-up, **U** for top-down, and **Space** to stop camera animation.
+
 - **Mouse wheel** - Zoom in/out toward the cursor position.
 
 - **Double-click** - Fit to window the track
@@ -84,6 +90,7 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 - **Right-click (map view)** - Open a context menu with direct access to existing actions.
   
   - Toggle tiles (M)
+  - 3D view (D)
   - Map style submenu (uses `mapTypeOrder`)
   - Fit to window (F)
   - Toggle grid when tiles are off (G)
@@ -108,6 +115,12 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 - **Bottom-centre:** Dynamic **scale bar**.
 
 - **Elevation Profile:** Synchronised hover line showing elevation at specific points along the track.
+
+- **3D overlays:** Track name and summary stay at top-left; hovering a track point adds coordinates, elevation, speed, and local time. Clicking the altitude/speed profile highlights the same position in the 3D map; double-click also focuses the camera.
+
+### Optional 3D view
+
+Files always open in the native flat 2D renderer. The `D` key or **3D view (D)** context-menu item starts the preferred renderer only when requested. Model `1` is a pitched perspective map without a terrain mesh. Model `2` is real terrain built from DEM tiles. Both models require the bundled `web` folder and the Microsoft Edge WebView2 Evergreen Runtime; the plugin needs no separate `WebView2Loader.dll`. If WebView2, local web assets, or the terrain provider fail, GPXLister closes the 3D renderer and returns to flat 2D with a diagnostic banner.
 
 ### Slope-based track colouring
 
@@ -135,6 +148,12 @@ GPXLister can render the track polyline with progressive colouring driven by the
   | `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                             |
   | `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                             |
   | `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                               |
+  | `3d_model`                  | int    | `2`                                                     | Preferred 3D renderer: `1` perspective, `2` real DEM terrain. Missing/invalid values are written as `2`.       |
+  | `terrainProvider`           | string | `terrarium`                                             | Real-terrain provider: `terrarium` or `maptiler`.                                                              |
+  | `terrariumTerrainEndpoint`  | string | AWS Terrarium URL                                       | Free Terrarium XYZ elevation tiles; no API key required.                                                       |
+  | `mapTilerTerrainEndpoint`   | string | MapTiler Terrain RGB TileJSON                           | MapTiler terrain URL; `{key}` is replaced by `mapTilerApiKey`.                                                |
+  | `mapTilerApiKey`            | string | empty                                                   | API key required for the default MapTiler terrain endpoint.                                                    |
+  | `terrainExaggeration`       | float  | `1.0`                                                   | Vertical terrain scale, clamped to `0.1` through `5.0`.                                                        |
   | `fitConverter`              | string | `Fit2Gpx.exe`                                           | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`.             |
   | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
   | `fitTimeoutSec`             | int    | `60`                                                    | Maximum FIT conversion time before the converter is terminated and an error is shown.                          |
@@ -164,7 +183,7 @@ mapTypeOrder=standard,satellite,topo
 standardTileEndpoint=https://tile.openstreetmap.org/{z}/{x}/{y}.png
 satelliteTileEndpoint=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
 topoTileEndpoint=https://a.tile.opentopomap.org/{z}/{x}/{y}.png
-userAgent=GPXLister/2.7.1
+userAgent=GPXLister/2.8
 ```
 
 | Provider                    | INI endpoint example                                                                                                                                                        | Pros                                                                                                                   | Cons and limits                                                                                                                                                                                             |
@@ -206,6 +225,13 @@ Unsupported or limited cases:
 - Largely coded via Gemini Pro.
 
 ## Versions
+
+- **v2.8 - Optional perspective and real 3D terrain**
+
+  - Added on-demand 3D via `D` and the map context menu while preserving flat 2D startup.
+  - Added perspective and real DEM terrain modes with Terrarium default and MapTiler API-key support.
+  - Kept overlays, track filtering, profiles, point selection, slope colouring, and keyboard/mouse navigation synchronised in 3D.
+  - Added bounded memory caches, deterministic renderer release, and safe fallback to 2D.
 
 - **v2.7.1 - Reverse map style cycling**
 

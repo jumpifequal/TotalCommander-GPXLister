@@ -1,4 +1,5 @@
 #include "Ini.h"
+#include <algorithm>
 #include <shlwapi.h>
 #pragma comment(lib, "Shlwapi.lib")
 
@@ -38,6 +39,23 @@ static void ReadFloat(const wchar_t* path, const wchar_t* key, float def, float&
 
 static void ReadStr(const wchar_t* path, const wchar_t* key, const wchar_t* def, wchar_t* out, size_t outc){
     GetPrivateProfileStringW(L"GPXLister", key, def, out, (DWORD)outc, path);
+}
+
+static void ReadClampedFloat(const wchar_t* path, const wchar_t* key, float def,
+                             float minimum, float maximum, float& out) {
+    wchar_t buf[32]{};
+    GetPrivateProfileStringW(L"GPXLister", key, L"", buf, 32, path);
+    if (buf[0] == L'\0') {
+        out = def;
+        return;
+    }
+    wchar_t* endPtr = nullptr;
+    const double value = wcstod(buf, &endPtr);
+    if (endPtr == buf || *endPtr != L'\0') {
+        out = def;
+        return;
+    }
+    out = (float)(std::max<double>)(minimum, (std::min<double>)(maximum, value));
 }
 
 static bool ReadStrOptional(const wchar_t* path, const wchar_t* key, wchar_t* out, size_t outc) {
@@ -99,6 +117,23 @@ void LoadOptions(Options& o){
     if (!o.hasMapTypeOrder) {
         lstrcpynW(o.mapTypeOrder, L"standard,satellite,topo", 128);
     }
+    wchar_t model3dText[16]{};
+    const bool has3dModel = ReadStrOptional(iniPath, L"3d_model", model3dText, 16);
+    wchar_t* model3dEnd = nullptr;
+    const long parsed3dModel = has3dModel ? wcstol(model3dText, &model3dEnd, 10) : 0;
+    if (!has3dModel || model3dEnd == model3dText || *model3dEnd != L'\0' ||
+        (parsed3dModel != 1 && parsed3dModel != 2)) {
+        o.preferred3dModel = 2;
+        WritePrivateProfileStringW(L"GPXLister", L"3d_model", L"2", iniPath);
+    }
+    else {
+        o.preferred3dModel = (int)parsed3dModel;
+    }
+    ReadStr(iniPath, L"terrainProvider", o.terrainProvider, o.terrainProvider, 32);
+    ReadStr(iniPath, L"terrariumTerrainEndpoint", o.terrariumTerrainEndpoint, o.terrariumTerrainEndpoint, 512);
+    ReadStr(iniPath, L"mapTilerTerrainEndpoint", o.mapTilerTerrainEndpoint, o.mapTilerTerrainEndpoint, 512);
+    ReadStr(iniPath, L"mapTilerApiKey", o.mapTilerApiKey, o.mapTilerApiKey, 256);
+    ReadClampedFloat(iniPath, L"terrainExaggeration", o.terrainExaggeration, 0.1f, 5.0f, o.terrainExaggeration);
     ReadStr(iniPath, L"userAgent", o.userAgent, o.userAgent, 128);
     ReadBool(iniPath, L"showElevationProfile", o.showElevationProfile, o.showElevationProfile);
     ReadBool(iniPath, L"showSpeedProfile", o.showSpeedProfile, o.showSpeedProfile);
