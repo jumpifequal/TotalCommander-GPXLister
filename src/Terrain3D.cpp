@@ -282,12 +282,18 @@ void Terrain3DView::SetSlopeColouring(bool enabled) {
     ExecuteScript(std::wstring(L"window.gpxSetSlope && window.gpxSetSlope(") + (enabled ? L"true" : L"false") + L");");
 }
 
-void Terrain3DView::HighlightPoint(int trackIndex, int pointIndex, bool focusCamera) {
+void Terrain3DView::HighlightPoint(int trackIndex, int pointIndex, double lon, double lat, bool focusCamera) {
     if (trackIndex < 0 || pointIndex < 0) return;
+    wchar_t coords[64]{};
+    swprintf_s(coords, L"%.8f,%.8f", lon, lat);
     std::wstring script = L"window.gpxHighlight && window.gpxHighlight(" +
         std::to_wstring(trackIndex) + L"," + std::to_wstring(pointIndex) + L"," +
-        (focusCamera ? L"true" : L"false") + L");";
+        coords + L"," + (focusCamera ? L"true" : L"false") + L");";
     ExecuteScript(script);
+}
+
+void Terrain3DView::ClearHighlight() {
+    ExecuteScript(L"window.gpxClearHighlight && window.gpxClearHighlight();");
 }
 
 void Terrain3DView::ExecuteScript(const std::wstring& script) {
@@ -325,6 +331,10 @@ void Terrain3DView::HandleWebMessage(const std::wstring& message) {
     }
     if (swscanf_s(message.c_str(), L"select|%d|%d", &track, &point) == 2) {
         PostMessageW(impl_->owner, TERRAIN3D_SELECT_MSG, (WPARAM)track, (LPARAM)point);
+        return;
+    }
+    if (swscanf_s(message.c_str(), L"highlighted|%d|%d", &track, &point) == 2) {
+        PostMessageW(impl_->owner, TERRAIN3D_HIGHLIGHTED_MSG, (WPARAM)track, (LPARAM)point);
         return;
     }
 

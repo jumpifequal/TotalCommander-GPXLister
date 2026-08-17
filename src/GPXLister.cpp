@@ -33,6 +33,7 @@
 #define ID_CTX_TOGGLE_3D            40011 // Toggle the preferred 3D renderer (keyboard: D)
 #define ID_CTX_MAP_STYLE_BASE       40100 // First dynamic map style command identifier
 #define GPXLISTER_QUERY_RENDER_MODE (WM_APP + 30) // Harness probe: 0=2D, 1=loading, 11/12=ready model
+#define GPXLISTER_QUERY_SYNC_STATE  (WM_APP + 31) // Harness probe: selected/guide/hover state bits.
 
 #define ID_MAX_CYCLING_SPEED        150.0 // km/h - used for speed profile scaling
 
@@ -369,9 +370,6 @@ static std::wstring JoinMapTypeOrder(const std::vector<std::wstring>& order) {
     return text;
 }
 
-static void DebugMapConfig(const std::wstring& msg) {
-    OutputDebugStringW((L"[GPXLister] " + msg + L"\n").c_str());
-}
 
 static std::vector<std::wstring> SplitMapTypeOrder(const wchar_t* text) {
     std::vector<std::wstring> parts;
@@ -410,12 +408,10 @@ static MapOrderValidation ValidateMapTypeOrder(const Options& opt) {
         }
         if (!IsKnownMapType(token)) {
             unknown.push_back(token);
-            DebugMapConfig(L"Unknown map type ignored in mapTypeOrder: " + token);
             repaired = true;
             continue;
         }
         if (std::find(result.order.begin(), result.order.end(), token) != result.order.end()) {
-            DebugMapConfig(L"Duplicate map type ignored in mapTypeOrder: " + token);
             repaired = true;
             continue;
         }
@@ -427,13 +423,11 @@ static MapOrderValidation ValidateMapTypeOrder(const Options& opt) {
         repaired = true;
         result.warning = L"GPXLister ignored invalid mapTypeOrder values in GPXLister.ini.\n\n"
                          L"Using fallback map order:\nstandard,satellite,topo";
-        DebugMapConfig(L"mapTypeOrder had no valid map types. Using fallback: standard,satellite,topo");
     }
 
     if (result.order.size() == 1 && result.order[0] == L"standard") {
         result.order.push_back(L"satellite");
         repaired = true;
-        DebugMapConfig(L"mapTypeOrder=standard expanded to standard,satellite for backward compatibility.");
     }
 
     if (!result.order.empty() && unknown.size() > 0) {
@@ -449,7 +443,6 @@ static MapOrderValidation ValidateMapTypeOrder(const Options& opt) {
     if (repaired) {
         const std::wstring repairedOrder = JoinMapTypeOrder(result.order);
         SaveOptionString(L"mapTypeOrder", repairedOrder.c_str());
-        DebugMapConfig(L"Repaired mapTypeOrder: " + repairedOrder);
     }
 
     return result;
@@ -481,8 +474,11 @@ struct State {
 
     int hoverTrackIdx = -1; // Index of the track containing the hovered point
     int hoverPointIdx = -1; // Index of the point within that track
-    int selectedPointTrackIdx = -1; // Persistent point selected from a profile or the 3D map.
+    int selectedPointTrackIdx = -1; // Last canonical point, retained only for cross-view hover handoff.
     int selectedPointIdx = -1;
+    bool selectedPointGuideVisible = false; // Whether the handoff/selection indicator is currently visible.
+    int renderedHighlightTrackIdx = -1; // Last marker index acknowledged by the 3D web renderer.
+    int renderedHighlightPointIdx = -1;
     POINT mousePos = { 0, 0 }; // Persist mouse position for OnPaint (Physical Coords)
 
     // D2D/DWrite/WIC
@@ -1963,13 +1959,6 @@ static void DrawCoords(const State& s, POINT pt) {
         double y = s.cy - centerY + dipMouseY;
         double lon = x2lon(x, s.zoom), lat = y2lat(y, s.zoom);
 
-        /*
-        // --- DEBUG CODE (Visualizzabile con DebugView o in VS Output) ---
-        wchar_t dbg[256];
-        swprintf(dbg, 256, L"Mouse Y: %d | mapTypeIndex: %d | InProfile: %s\n",
-            pt.y, s.currentMapTypeIndex,
-            IsPointInElevationProfile(s, s.mousePos) ? L"YES" : L"NO");
-        OutputDebugStringW(dbg);*/
 
         wchar_t coords[64];
         swprintf(coords, 64, L" | lat %.6f lon %.6f", lat, lon);
@@ -2449,6 +2438,15 @@ static void DrawWaypoints(const State& s) {
     }
 }
 
+static bool TrackPointLonLat(const State& s, int trackIndex, int pointIndex, double& lon, double& lat) {
+    if (trackIndex < 0 || trackIndex >= (int)s.tracks.size()) return false;
+    const auto& track = s.tracks[(size_t)trackIndex];
+    if (pointIndex < 0 || pointIndex >= (int)track.pts.size()) return false;
+    lon = track.pts[(size_t)pointIndex].lon;
+    lat = track.pts[(size_t)pointIndex].lat;
+    return true;
+}
+
 static void DrawSelectedPoint(State& s) {
     const int trackIndex = s.selectedPointTrackIdx;
     const int pointIndex = s.selectedPointIdx;
@@ -2456,6 +2454,7 @@ static void DrawSelectedPoint(State& s) {
     const auto& track = s.tracks[(size_t)trackIndex];
     if (pointIndex < 0 || pointIndex >= (int)track.pts.size()) return;
     if (s.selectedTrack != -1 && s.selectedTrack != trackIndex) return;
+    if (!s.selectedPointGuideVisible) return;
 
     RECT rc{};
     GetClientRect(s.hwnd, &rc);
@@ -2815,10 +2814,12 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (FindProfilePointAtX(s, dipMouse.x, trackIndex, pointIndex)) {
                 s.selectedPointTrackIdx = trackIndex;
                 s.selectedPointIdx = pointIndex;
+                s.selectedPointGuideVisible = true;
                 s.hoverTrackIdx = trackIndex;
                 s.hoverPointIdx = pointIndex;
-                if (s.terrain3dActive && s.terrain3d) {
-                    s.terrain3d->HighlightPoint(trackIndex, pointIndex, false);
+                double lon, lat;
+                if (s.terrain3dActive && s.terrain3d && TrackPointLonLat(s, trackIndex, pointIndex, lon, lat)) {
+                    s.terrain3d->HighlightPoint(trackIndex, pointIndex, lon, lat, false);
                 }
                 InvalidateRect(s.hwnd, nullptr, FALSE);
             }
@@ -2835,8 +2836,14 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     }
     case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tracking{ sizeof(tracking), TME_LEAVE, s.hwnd, 0 };
+        TrackMouseEvent(&tracking);
         s.hoverTrackIdx = -1;
         s.hoverPointIdx = -1;
+        // Real mouse movement is live interaction, which always supersedes the
+        // one-time view-switch handoff guide (mirrors TERRAIN3D_HOVER_MSG's handling
+        // in the 3D view) — regardless of whether it lands on a new track point.
+        s.selectedPointGuideVisible = false;
 
         if (s.resizingSidebar) {
             s.sidebarWidth = std::clamp((int)mouse.x, MinSidebarWidthPx(s), MaxSidebarWidthPx(s, rc.right));
@@ -2880,6 +2887,15 @@ static void OnMouse(State& s, UINT msg, WPARAM wParam, LPARAM lParam) {
                         }
                         curAccumulated += t.stats.distance;
                     }
+                }
+            }
+            double lon, lat;
+            if (s.terrain3dActive && s.terrain3d) {
+                if (s.hoverTrackIdx >= 0 && s.hoverPointIdx >= 0 &&
+                    TrackPointLonLat(s, s.hoverTrackIdx, s.hoverPointIdx, lon, lat)) {
+                    s.terrain3d->HighlightPoint(s.hoverTrackIdx, s.hoverPointIdx, lon, lat, false);
+                } else {
+                    s.terrain3d->ClearHighlight();
                 }
             }
         }
@@ -3348,7 +3364,8 @@ static std::wstring BuildTerrain3DPayload(const State& s) {
             const auto& point = track.pts[pi];
             const double speed = pi < track.speed.size() ? track.speed[pi] : -1.0;
             json << std::setprecision(8) << L"[" << point.lon << L"," << point.lat << L"," << point.ele
-                 << L"," << speed << L"," << pi << L"," << std::setprecision(0) << point.time << L"]";
+                 << L"," << speed << L"," << pi << L"," << std::fixed << std::setprecision(3) << point.time
+                 << std::defaultfloat << L"]";
         }
         if (track.pts.size() > 1 && ((track.pts.size() - 1) % step) != 0) {
             const size_t pi = track.pts.size() - 1;
@@ -3356,7 +3373,8 @@ static std::wstring BuildTerrain3DPayload(const State& s) {
             const double speed = pi < track.speed.size() ? track.speed[pi] : -1.0;
             if (!firstPoint) json << L",";
             json << std::setprecision(8) << L"[" << point.lon << L"," << point.lat << L"," << point.ele
-                 << L"," << speed << L"," << pi << L"," << std::setprecision(0) << point.time << L"]";
+                 << L"," << speed << L"," << pi << L"," << std::fixed << std::setprecision(3) << point.time
+                 << std::defaultfloat << L"]";
         }
         json << L"]}";
     }
@@ -3455,6 +3473,16 @@ static void Deactivate3DView(State& s) {
 }
 
 static void Toggle3DView(State& s) {
+    const bool hasHoverPoint = s.hoverTrackIdx >= 0 && s.hoverPointIdx >= 0;
+    if (hasHoverPoint) {
+        s.selectedPointTrackIdx = s.hoverTrackIdx;
+        s.selectedPointIdx = s.hoverPointIdx;
+    }
+    s.hoverTrackIdx = -1;
+    s.hoverPointIdx = -1;
+    s.selectedPointGuideVisible = hasHoverPoint;
+    s.renderedHighlightTrackIdx = -1;
+    s.renderedHighlightPointIdx = -1;
     if (s.terrain3dActive) Deactivate3DView(s);
     else Activate3DView(s);
 }
@@ -3482,9 +3510,6 @@ static void ShowMapContextMenu(State& s, const POINT& screenPt) {
             UINT styleFlags = MF_STRING;
             if ((int)i == s.currentMapTypeIndex) {
                 styleFlags |= MF_CHECKED;
-            }
-            if (s.terrain3dActive && s.terrain3d && s.hoverTrackIdx >= 0 && s.hoverPointIdx >= 0) {
-                s.terrain3d->HighlightPoint(s.hoverTrackIdx, s.hoverPointIdx, false);
             }
             AppendMenuW(hMapStyleMenu, styleFlags, ID_CTX_MAP_STYLE_BASE + (UINT)i, MapTypeLabel(s.mapTypeOrder[i]));
         }
@@ -3589,6 +3614,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!s->terrain3dActive) return 0;
         if (s->terrain3dLoading) return 1;
         return 10 + s->opt.preferred3dModel;
+    case GPXLISTER_QUERY_SYNC_STATE: {
+        if (!s) return 0;
+        const bool hasHover = s->hoverTrackIdx >= 0 && s->hoverPointIdx >= 0;
+        const bool guideVisible = s->selectedPointGuideVisible;
+        const int visibleTrack = hasHover ? s->hoverTrackIdx :
+            (guideVisible ? s->selectedPointTrackIdx : -1);
+        const int visiblePoint = hasHover ? s->hoverPointIdx :
+            (guideVisible ? s->selectedPointIdx : -1);
+        return (s->selectedPointTrackIdx >= 0 && s->selectedPointIdx >= 0 ? 1 : 0) |
+               (guideVisible ? 2 : 0) |
+               (hasHover ? 4 : 0) |
+               (s->renderedHighlightTrackIdx == visibleTrack &&
+                s->renderedHighlightPointIdx == visiblePoint && visibleTrack >= 0 ? 8 : 0);
+    }
     case WM_COMMAND:
         if (LOWORD(w) == 101 && HIWORD(w) == LBN_SELCHANGE) {
             if (s) OnSidebarSelChange(*s);
@@ -3662,7 +3701,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (s && s->terrain3dActive) {
             s->terrain3dLoading = false;
             Update3DLayout(*s);
-            if (s->terrain3d) s->terrain3d->Focus();
+            if (s->terrain3d) {
+                double lon, lat;
+                if (s->hoverTrackIdx >= 0 && s->hoverPointIdx >= 0 &&
+                    TrackPointLonLat(*s, s->hoverTrackIdx, s->hoverPointIdx, lon, lat)) {
+                    s->terrain3d->HighlightPoint(s->hoverTrackIdx, s->hoverPointIdx, lon, lat, false);
+                }
+                else if (s->selectedPointTrackIdx >= 0 && s->selectedPointIdx >= 0 &&
+                    TrackPointLonLat(*s, s->selectedPointTrackIdx, s->selectedPointIdx, lon, lat)) {
+                    s->terrain3d->HighlightPoint(s->selectedPointTrackIdx, s->selectedPointIdx, lon, lat, false);
+                }
+                s->terrain3d->Focus();
+            }
             InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
@@ -3670,7 +3720,6 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (s && s->terrain3d) {
             const std::wstring detail = s->terrain3d->LastError();
             s->terrain3dError = detail;
-            OutputDebugStringW((L"[GPXLister] 3D renderer failed; reverting to flat 2D: " + detail + L"\n").c_str());
             s->terrain3dActive = false;
             s->terrain3dLoading = false;
             s->terrain3dFailure = true;
@@ -3683,12 +3732,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (s && (int)w == -1 && (int)l == -1) {
             s->hoverTrackIdx = -1;
             s->hoverPointIdx = -1;
+            s->selectedPointGuideVisible = false;
+            if (s->terrain3dActive && s->terrain3d) {
+                s->terrain3d->ClearHighlight();
+            }
             InvalidateRect(h, nullptr, FALSE);
         }
         else if (s && (int)w >= 0 && (int)w < (int)s->tracks.size() &&
             (int)l >= 0 && (int)l < (int)s->tracks[(size_t)w].pts.size()) {
             s->hoverTrackIdx = (int)w;
             s->hoverPointIdx = (int)l;
+            s->selectedPointGuideVisible = false;
+            double lon, lat;
+            if (s->terrain3dActive && s->terrain3d && TrackPointLonLat(*s, (int)w, (int)l, lon, lat)) {
+                s->terrain3d->HighlightPoint((int)w, (int)l, lon, lat, false);
+            }
             InvalidateRect(h, nullptr, FALSE);
         }
         return 0;
@@ -3697,10 +3755,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             (int)l >= 0 && (int)l < (int)s->tracks[(size_t)w].pts.size()) {
             s->selectedPointTrackIdx = (int)w;
             s->selectedPointIdx = (int)l;
+            s->selectedPointGuideVisible = true;
             s->hoverTrackIdx = (int)w;
             s->hoverPointIdx = (int)l;
-            if (s->terrain3d) s->terrain3d->HighlightPoint((int)w, (int)l, false);
+            double lon, lat;
+            if (s->terrain3d && TrackPointLonLat(*s, (int)w, (int)l, lon, lat)) {
+                s->terrain3d->HighlightPoint((int)w, (int)l, lon, lat, false);
+            }
             InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+    case TERRAIN3D_HIGHLIGHTED_MSG:
+        if (s) {
+            s->renderedHighlightTrackIdx = (int)w;
+            s->renderedHighlightPointIdx = (int)l;
         }
         return 0;
     case TERRAIN3D_CONTEXT_MSG:
@@ -3757,10 +3825,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (FindProfilePointAtX(*s, dipPt.x, selectedTrackIndex, selectedPointIndex)) {
                 s->selectedPointTrackIdx = selectedTrackIndex;
                 s->selectedPointIdx = selectedPointIndex;
+                s->selectedPointGuideVisible = true;
                 s->hoverTrackIdx = selectedTrackIndex;
                 s->hoverPointIdx = selectedPointIndex;
-                if (s->terrain3dActive && s->terrain3d) {
-                    s->terrain3d->HighlightPoint(selectedTrackIndex, selectedPointIndex, true);
+                double lon, lat;
+                if (s->terrain3dActive && s->terrain3d &&
+                    TrackPointLonLat(*s, selectedTrackIndex, selectedPointIndex, lon, lat)) {
+                    s->terrain3d->HighlightPoint(selectedTrackIndex, selectedPointIndex, lon, lat, true);
                     InvalidateRect(h, nullptr, FALSE);
                     break;
                 }
@@ -3846,6 +3917,18 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_LBUTTONUP:
     case WM_MOUSEMOVE:
     case WM_MOUSEWHEEL: if (s) { OnMouse(*s, m, w, l); } break;
+    case WM_MOUSELEAVE:
+        if (s) {
+            if (s->terrain3dActive && s->terrain3dLoading) return 0;
+            s->hoverTrackIdx = -1;
+            s->hoverPointIdx = -1;
+            s->selectedPointGuideVisible = false;
+            if (s->terrain3dActive && s->terrain3d) {
+                s->terrain3d->ClearHighlight();
+            }
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
     case WM_KEYDOWN: if (s) { OnKey(*s, w); } break;
     case WM_CHAR: if (s) {
         wchar_t ch = (wchar_t)w;
@@ -4059,6 +4142,7 @@ static void ShowAddTrackFileDialog(State& s) {
     s.hoverPointIdx = -1;
     s.selectedPointTrackIdx = -1;
     s.selectedPointIdx = -1;
+    s.selectedPointGuideVisible = false;
     ComputeBounds(s);
     RefreshSidebarAfterTrackAppend(s);
     FitToWindow(s);
@@ -4205,6 +4289,7 @@ int WINAPI ListLoadNextW(HWND ParentWin, HWND ListWin, WCHAR* FileToLoad, int Sh
     s->hoverPointIdx = -1;
     s->selectedPointTrackIdx = -1;
     s->selectedPointIdx = -1;
+    s->selectedPointGuideVisible = false;
     s->terrain3dFailure = false;
     s->terrain3dError.clear();
     s->tracks = std::move(newTracks);

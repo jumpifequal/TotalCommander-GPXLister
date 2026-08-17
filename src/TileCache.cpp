@@ -90,10 +90,10 @@ std::wstring TileCache::MakeUrl(const TileKey& k) const{
 
 bool TileCache::Download(const std::wstring& url, std::vector<BYTE>& out){
     
-    if (url.empty()) { OutputDebugStringW(L"[TileCache] empty url\n"); return false; }
+    if (url.empty()) return false;
 
     HINTERNET hi = InternetOpenW(_ua.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (!hi) { OutputDebugStringW(L"[TileCache] InternetOpenW failed\n"); return false; }
+    if (!hi) return false;
 
     // Timeouts: keep the UI responsive even if the endpoint hangs.
     DWORD ms = 8000;
@@ -215,7 +215,6 @@ void TileCache::Worker() {
             // It was a download error OR garbage data (HTML/Text).
             // Do NOT store in _mem. Increase backoff to prevent network spam.
             backoff = std::min(_backoffMax, backoff * 2);
-            OutputDebugStringW(L"[TileCache] Tile download invalid content. Dropped.\n");
         }
         Sleep(_delay + backoff / 8);
     }
@@ -302,7 +301,6 @@ bool TileCache::TryGetBitmap(const TileKey& k, ID2D1Bitmap** out) {
 void TileCache::UpdateEndpoint(const std::wstring& endpoint) {
     std::lock_guard<std::mutex> lk(_mx);
     _endpoint = NormaliseEndpoint(endpoint);
-    if (_endpoint.empty()) OutputDebugStringW(L"[TileCache] endpoint rejected. tiles disabled.\n");
     _endpointVersion++; // Increment version to invalidate in-flight downloads
     _q.clear(); // Drop queued work for old endpoint
 }

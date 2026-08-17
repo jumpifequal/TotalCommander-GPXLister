@@ -11,6 +11,7 @@ constexpr UINT TERRAIN3D_HOVER_MSG = WM_APP + 22;
 constexpr UINT TERRAIN3D_SELECT_MSG = WM_APP + 23;
 constexpr UINT TERRAIN3D_CONTEXT_MSG = WM_APP + 24;
 constexpr UINT TERRAIN3D_KEY_MSG = WM_APP + 25;
+constexpr UINT TERRAIN3D_HIGHLIGHTED_MSG = WM_APP + 26;
 constexpr LPARAM TERRAIN3D_MOD_SHIFT = 1;
 constexpr LPARAM TERRAIN3D_MOD_CONTROL = 2;
 
@@ -39,7 +40,8 @@ public:
     void FitTrack();
     void SelectTrack(int trackIndex);
     void SetSlopeColouring(bool enabled);
-    void HighlightPoint(int trackIndex, int pointIndex, bool focusCamera);
+    void HighlightPoint(int trackIndex, int pointIndex, double lon, double lat, bool focusCamera);
+    void ClearHighlight();
     void Shutdown();
 
     bool IsReady() const;

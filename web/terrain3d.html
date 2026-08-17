@@ -34,7 +34,6 @@
     let map = null;
     let payload = null;
     let selectedTrack = -1;
-    let highlighted = null;
     let slopeEnabled = false;
     let lastHoverMessage = '';
     let interactionCleanup = null;
@@ -91,7 +90,6 @@
         interactionCleanup();
         interactionCleanup = null;
       }
-      highlighted = null;
       lastHoverMessage = '';
       trackLayers.length = 0;
       if (map) {
@@ -191,11 +189,44 @@
         paint: { 'circle-radius': 6, 'circle-color': '#ffd21f', 'circle-stroke-color': '#222', 'circle-stroke-width': 1.5 }
       });
 
-      map.addSource('gpx-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      // Rendered through the exact same WebGL/terrain-draping pipeline as the
+      // (invisible) hit-test circles above and the track line itself. A DOM Marker
+      // positions itself via a separate CPU-side terrain-elevation lookup that can
+      // disagree with the GPU-draped mesh by a large margin on steep terrain — this
+      // guarantees the highlight always lands exactly where the hit-test says it did.
+      //
+      // Starts with one real (but opacity-0) feature rather than an empty
+      // FeatureCollection, and only ever toggles its 'opacity'/position afterward —
+      // avoids any zero-to-one-feature transition on the source entirely.
+      // Opacity is driven by a plain numeric property (0 or 1) read directly via
+      // ['get', 'opacity'], not a boolean compared with a 'case'/'==' expression —
+      // a boolean property surviving the GeoJSON-source worker round-trip as
+      // something other than a strict JS true/false would make '==' silently and
+      // permanently evaluate false, pinning the circle invisible regardless of
+      // whether/when a render actually happens. A numeric get avoids that class of
+      // doubt entirely.
+      const firstTrackPoint = payload.tracks.length && payload.tracks[0].points.length
+        ? payload.tracks[0].points[0] : null;
+      map.addSource('gpx-highlight', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: firstTrackPoint ? [{
+            type: 'Feature', properties: { opacity: 0 },
+            geometry: { type: 'Point', coordinates: [firstTrackPoint[0], firstTrackPoint[1]] }
+          }] : []
+        }
+      });
       map.addLayer({
         id: 'gpx-highlight-layer', type: 'circle', source: 'gpx-highlight',
-        paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-color': '#e11d35', 'circle-stroke-width': 3 }
+        paint: {
+          'circle-radius': 7, 'circle-color': '#fff',
+          'circle-stroke-color': '#e11d35', 'circle-stroke-width': 3,
+          'circle-opacity': ['get', 'opacity'],
+          'circle-stroke-opacity': ['get', 'opacity']
+        }
       });
+
       applyTrackSelection();
     }
 
@@ -283,6 +314,7 @@
         window.removeEventListener('mouseup', finishModifierDrag, true);
         window.removeEventListener('blur', finishModifierDrag);
         document.removeEventListener('keydown', handleKey, true);
+        canvas.removeEventListener('mouseleave', clearHoverOnLeave);
       };
 
       map.on('mousemove', event => {
@@ -290,10 +322,10 @@
         const feature = hits.length ? hits[0] : null;
         map.getCanvas().style.cursor = feature ? 'pointer' : '';
         if (feature) {
-          const message = `hover|${feature.properties.track}|${feature.properties.point}`;
-          if (message !== lastHoverMessage) {
-            lastHoverMessage = message;
-            post(message);
+          const key = `hover|${feature.properties.track}|${feature.properties.point}`;
+          if (key !== lastHoverMessage) {
+            lastHoverMessage = key;
+            post(key);
           }
           updateOverlay(feature, event.lngLat);
         } else if (lastHoverMessage) {
@@ -302,6 +334,17 @@
           updateOverlay(null, event.lngLat);
         }
       });
+
+      // The pointer can leave the WebView2 area directly (without first crossing
+      // empty track space), which 'mousemove' alone would never observe.
+      const clearHoverOnLeave = () => {
+        if (lastHoverMessage) {
+          lastHoverMessage = '';
+          post('hover|-1|-1');
+          updateOverlay(null, { lat: 0, lng: 0 });
+        }
+      };
+      canvas.addEventListener('mouseleave', clearHoverOnLeave);
 
       map.on('click', event => {
         const hits = map.queryRenderedFeatures(event.point, { layers: [pointLayerId] });
@@ -319,7 +362,6 @@
         const center = map.getCenter();
         post(`camera|${center.lng}|${center.lat}|${map.getZoom()}|${map.getPitch()}|${map.getBearing()}`);
       });
-
     }
 
     function fitTrack() {
@@ -332,7 +374,17 @@
           else bounds.extend([point[0], point[1]]);
         });
       });
-      if (bounds) map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 });
+      if (bounds) {
+        // With terrain enabled, MapLibre must finalize the camera elevation at
+        // the end of the initial fit. Otherwise that correction is deferred
+        // until the first camera interaction, desynchronizing terrain picking.
+        map.fitBounds(bounds, {
+          padding: 48,
+          maxZoom: 16,
+          duration: 0,
+          freezeElevation: payload.model === 2
+        });
+      }
     }
 
     function buildMap(configuration) {
@@ -352,8 +404,17 @@
       map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
       map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
 
+      // A raster-dem source routinely has occasional individual tile fetch
+      // failures (edge-of-coverage tiles, transient network blips) while the
+      // user pans/zooms around a route — MapLibre already handles those
+      // gracefully per-tile. Escalating every one of those to a full 3D→2D
+      // fallback would revert a perfectly working session over one flaky
+      // request. Only treat a terrain-dem failure as fatal during the
+      // initial load, where it really does mean the endpoint/key is broken.
       let reportedTerrainFailure = false;
+      let initialLoadComplete = false;
       map.on('error', event => {
+        if (initialLoadComplete) return;
         const message = event && event.error ? String(event.error.message || event.error) : 'Unknown rendering error';
         const terrainSourceFailed = event && event.sourceId === 'terrain-dem';
         const unattributedTerrainFailure = (!event || !event.sourceId) && /terrain|dem|401|403|404/i.test(message);
@@ -381,9 +442,17 @@
           }
           addTracks();
           wireInteractions();
-          fitTrack();
-          document.getElementById('status').style.display = 'none';
-          post('ready');
+          // Fit only after terrain and GeoJSON sources settle. Fitting during
+          // source startup leaves terrain-dependent hover geometry stale until
+          // the first real camera movement or window resize.
+          map.once('idle', () => {
+            map.once('idle', () => {
+              document.getElementById('status').style.display = 'none';
+              initialLoadComplete = true;
+              post('ready');
+            });
+            fitTrack();
+          });
         } catch (error) {
           post(`error|${String(error && error.message ? error.message : error).substring(0, 300)}`);
         }
@@ -407,19 +476,31 @@
         if (map.getLayer(layer)) map.setPaintProperty(layer, 'line-color', gradientExpression(track.points, routeColour(index)));
       });
     };
-    window.gpxHighlight = function(trackIndex, originalPointIndex, focus) {
-      if (!map || !payload || trackIndex < 0 || trackIndex >= payload.tracks.length) return;
-      const points = payload.tracks[trackIndex].points;
-      let point = points.find(candidate => candidate[3] === originalPointIndex);
-      if (!point && points.length) {
-        point = points.reduce((best, candidate) =>
-          Math.abs(candidate[3] - originalPointIndex) < Math.abs(best[3] - originalPointIndex) ? candidate : best, points[0]);
-      }
-      if (!point) return;
-      highlighted = [trackIndex, originalPointIndex];
+    let lastHighlightLonLat = null;
+
+    window.gpxHighlight = function(trackIndex, originalPointIndex, lon, lat, focus) {
+      if (!map || !payload || trackIndex < 0 || trackIndex >= payload.tracks.length) return false;
+      if (typeof lon !== 'number' || typeof lat !== 'number') return false;
       const source = map.getSource('gpx-highlight');
-      if (source) source.setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [point[0], point[1], point[2] || 0] } });
-      if (focus) map.easeTo({ center: [point[0], point[1]], zoom: Math.max(map.getZoom(), 15), duration: 350 });
+      if (!source) return false;
+      lastHighlightLonLat = [lon, lat];
+      source.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { opacity: 1 }, geometry: { type: 'Point', coordinates: [lon, lat] } }] });
+      map.triggerRepaint();
+
+      post(`highlighted|${trackIndex}|${originalPointIndex}`);
+
+      if (focus) map.easeTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15), duration: 350 });
+      return true;
+    };
+    window.gpxClearHighlight = function() {
+      const source = map && map.getSource('gpx-highlight');
+      // Keep the feature present (never go back to an empty FeatureCollection) —
+      // only toggle it invisible via 'opacity', at whatever position it last had.
+      if (source && lastHighlightLonLat) {
+        source.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { opacity: 0 }, geometry: { type: 'Point', coordinates: lastHighlightLonLat } }] });
+      }
+      map.triggerRepaint();
+      post('highlighted|-1|-1');
     };
   </script>
 </body>
