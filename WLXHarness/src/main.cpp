@@ -14,6 +14,7 @@
 
 static constexpr UINT_PTR AUTO3D_TIMER = 42;
 static constexpr UINT GPXLISTER_QUERY_RENDER_MODE = WM_APP + 30;
+static constexpr UINT GPXLISTER_QUERY_SYNC_STATE = WM_APP + 31;
 
 typedef HWND (WINAPI *PFN_ListLoadW)(HWND, WCHAR*, int);
 typedef int  (WINAPI *PFN_ListLoadNextW)(HWND, HWND, WCHAR*, int);
@@ -40,7 +41,9 @@ struct HarnessState {
     int completedCycles = 0;
     int autoPhase = 0;
     int waitTicks = 0;
+    bool clearRequested = false;
     LRESULT lastRenderMode = 0;
+    LRESULT lastSyncState = 0;
     SIZE_T initialWorkingSet = 0;
     SIZE_T peakWorkingSet = 0;
     SIZE_T cyclePeak = 0;
@@ -49,6 +52,12 @@ struct HarnessState {
 };
 
 static bool LoadNextFile(HarnessState& state, const std::wstring& path);
+
+static LPARAM ProfilePoint(HWND child, int numerator) {
+    RECT rc{};
+    GetClientRect(child, &rc);
+    return MAKELPARAM((rc.right * numerator) / 3, (rc.bottom * 9) / 10);
+}
 
 static SIZE_T CurrentWorkingSet() {
     std::vector<DWORD> processIds{ GetCurrentProcessId() };
@@ -93,10 +102,10 @@ static void AppendAutomationLog(const HarnessState& state, const wchar_t* status
     if (file == INVALID_HANDLE_VALUE) return;
     SetFilePointer(file, 0, nullptr, FILE_END);
     wchar_t line[512]{};
-    swprintf_s(line, L"%s model=%s cycles=%d phase=%d last_mode=%lld initial_private_mb=%.1f peak_private_mb=%.1f final_private_mb=%.1f\r\n",
+    swprintf_s(line, L"%s model=%s cycles=%d phase=%d last_mode=%lld last_sync=%lld initial_private_mb=%.1f peak_private_mb=%.1f final_private_mb=%.1f\r\n",
                status, state.expect3dFailure ? L"failure" : std::to_wstring(state.expectedMode - 10).c_str(),
                state.completedCycles, state.autoPhase,
-               (long long)state.lastRenderMode,
+               (long long)state.lastRenderMode, (long long)state.lastSyncState,
                state.initialWorkingSet / 1048576.0, state.peakWorkingSet / 1048576.0,
                CurrentWorkingSet() / 1048576.0);
     DWORD bytes = 0;
@@ -125,6 +134,14 @@ static void RunAutomationTick(HarnessState& state) {
     switch (state.autoPhase) {
         case 0:
             if (mode != 0) { FinishAutomation(state, false); return; }
+            {
+                const LPARAM profilePoint = ProfilePoint(state.child, 1);
+                SendMessageW(state.child, WM_MOUSEMOVE, 0, profilePoint);
+            }
+            if (SendMessageW(state.child, GPXLISTER_QUERY_SYNC_STATE, 0, 0) != 4) {
+                FinishAutomation(state, false);
+                return;
+            }
             SendMessageW(state.child, WM_KEYDOWN, 'D', 0);
             state.waitTicks = 0;
             state.autoPhase = 1;
@@ -136,23 +153,40 @@ static void RunAutomationTick(HarnessState& state) {
                 return;
             }
             if (mode == state.expectedMode) {
+                const LRESULT syncState = SendMessageW(state.child, GPXLISTER_QUERY_SYNC_STATE, 0, 0);
+                state.lastSyncState = syncState;
+                if ((syncState & 3) != 3) {
+                    FinishAutomation(state, false);
+                    return;
+                }
+                if ((syncState & 8) == 0) {
+                    if (++state.waitTicks > 20) FinishAutomation(state, false);
+                    break;
+                }
                 state.waitTicks = 0;
                 state.autoPhase = 2;
             } else if (++state.waitTicks > 60) {
                 FinishAutomation(state, false);
             }
             break;
-        case 2:
+        case 2: {
             if (++state.waitTicks < 6) break;
             if (mode != state.expectedMode) { FinishAutomation(state, false); return; }
-            {
-                RECT rc{};
-                GetClientRect(state.child, &rc);
-                const LPARAM profilePoint = MAKELPARAM((rc.right * 2) / 3, (rc.bottom * 9) / 10);
-                SendMessageW(state.child, WM_MOUSEMOVE, 0, profilePoint);
+            if (state.waitTicks == 6) {
+                const LPARAM profilePoint = ProfilePoint(state.child, 2);
                 SendMessageW(state.child, WM_LBUTTONDOWN, MK_LBUTTON, profilePoint);
                 SendMessageW(state.child, WM_LBUTTONUP, 0, profilePoint);
                 SendMessageW(state.child, WM_LBUTTONDBLCLK, MK_LBUTTON, profilePoint);
+            }
+            const LRESULT syncState = SendMessageW(state.child, GPXLISTER_QUERY_SYNC_STATE, 0, 0);
+            state.lastSyncState = syncState;
+            if ((syncState & 3) != 3) {
+                FinishAutomation(state, false);
+                return;
+            }
+            if ((syncState & 8) == 0) {
+                if (state.waitTicks > 26) FinishAutomation(state, false);
+                break;
             }
             SendMessageW(state.child, WM_KEYDOWN, 'F', 0);
             SendMessageW(state.child, WM_KEYDOWN, 'S', 0);
@@ -167,28 +201,50 @@ static void RunAutomationTick(HarnessState& state) {
                              (hostRect.bottom - hostRect.top) + 16,
                              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            state.clearRequested = false;
             state.waitTicks = 0;
             state.autoPhase = 3;
             break;
-        case 3:
+        }
+        case 3: {
             if (mode == 1) {
                 if (++state.waitTicks > 60) FinishAutomation(state, false);
                 break;
             }
             if (mode != state.expectedMode) { FinishAutomation(state, false); return; }
+            if (!state.clearRequested) {
+                SendMessageW(state.child, WM_MOUSELEAVE, 0, 0);
+                state.clearRequested = true;
+                state.waitTicks = 0;
+                break;
+            }
+            const LRESULT syncState = SendMessageW(state.child, GPXLISTER_QUERY_SYNC_STATE, 0, 0);
+            state.lastSyncState = syncState;
+            if (syncState != 1) {
+                if (++state.waitTicks > 20) FinishAutomation(state, false);
+                break;
+            }
             SendMessageW(state.child, WM_KEYDOWN, 'D', 0);
             state.waitTicks = 0;
             state.autoPhase = 4;
             break;
-        case 4:
+        }
+        case 4: {
             if (mode != 0) {
                 if (++state.waitTicks > 20) FinishAutomation(state, false);
                 break;
+            }
+            const LRESULT syncState = SendMessageW(state.child, GPXLISTER_QUERY_SYNC_STATE, 0, 0);
+            state.lastSyncState = syncState;
+            if ((syncState & 11) != 1) {
+                FinishAutomation(state, false);
+                return;
             }
             ++state.completedCycles;
             state.waitTicks = 0;
             state.autoPhase = 5;
             break;
+        }
         case 5:
             // Allow WebView2 child processes from the previous 3D view to exit.
             if (++state.waitTicks < (state.completedCycles >= state.autoCycles ? 30 : 10)) break;
