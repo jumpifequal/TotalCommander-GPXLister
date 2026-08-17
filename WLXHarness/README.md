@@ -13,6 +13,6 @@ Automated modes:
 - `2`: real terrain renderer
 - `0`: expect terrain-provider failure and safe 2D fallback
 
-Each normal cycle verifies flat-2D startup, enters the requested 3D mode, exercises profile mouse selection/double-click, fit, slope colouring, tile toggles, map-style cycling, resize, return to 2D, and reload. The log records process-tree private memory and rejects unbounded cycle-to-cycle growth. The final cycle allows time for WebView2 child-process cleanup.
+Each normal cycle verifies flat-2D startup, hovers a profile point without clicking, enters the requested 3D mode, checks the one-time point/guide handoff, and requires the WebView to acknowledge the exact initial DOM marker before any 3D camera movement. It then selects a different profile point, requires a second marker acknowledgement, refreshes the 3D style, explicitly ends the hover, and fails unless both the profile guide and rendered marker clear without reverting to the handoff point. It also exercises fit, slope colouring, tile toggles, map-style cycling, resize, return to 2D, reload, and process-tree memory bounds.
 
 Use an INI beside the test plugin to select the provider. Isolated plugin/INI folders make it possible to test perspective, Terrarium, MapTiler, and invalid-provider configurations without altering the main development INI.
