@@ -4,12 +4,12 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 
 **Note**: binaries are falsely marked with some malicious signatures by VirusTotal. This is because of 3 reasons: I used v145 libraries from VS 2026, I compressed the program, and the program fetches online map tiles and elevation.
 
-**Latest release:** `v2.8` adds optional perspective and real DEM terrain views while preserving the native flat 2D startup view.
+**Latest release:** `v2.8.1` keeps the mouse, 3D hover marker, and profile guide aligned immediately after opening real terrain, without requiring a resize or camera drag.
 
 ## Key Features
 
 - **Direct2D Rendering**: Smooth, anti-aliased track lines and high-quality map rendering.
-- **Optional 3D Rendering**: Press `D` for perspective or real terrain according to `3d_model`; Terrarium works without a key and MapTiler is supported with an API key.
+- **Optional 3D Rendering**: Press `D` for perspective or real terrain according to `3d_model`; Terrarium works without a key and MapTiler is supported with an API key. Track hover shows the source date/time, and profile hover follows the same point with an immediately visible, transient 3D marker.
 - **FIT Support**: `.fit` files are converted transparently through `Fit2Gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **KML/KMZ Support**: `.kml` and `.kmz` files are converted transparently through `kml2gpx.exe` into a temporary GPX file and cleaned up after loading.
 - **Map Style Cycle**: Switch forward through configured map styles with `T`, backward with `Shift+T`, or choose a style directly from the map context menu.
@@ -58,7 +58,7 @@ A high-performance Lister plugin for Total Commander that renders GPX, FIT, KML,
 - **Information**: `I` opens the summary dialog.
 - **Map context menu**: right-click the map in 2D or 3D to switch view, choose the map style, add tracks, fit, toggle overlays, open the summary, or copy the view.
 - **Copy view**: `Ctrl+C` and `Ctrl+Ins` copy the current visible Lister view to the clipboard as PNG. The same action is available from the map right-click context menu as **Copy view to clipboard (Ctrl+C)**.
-- **Hover**: Move the mouse over the map track or profile to see synchronised crosshairs/position lines.
+- **Hover**: Move the mouse over the map track or profile to see synchronised crosshairs/position lines. The active point is carried across 2D/3D switches and appears immediately in the incoming view.
 
 ## Configuration (`GPXLister.ini`)
 

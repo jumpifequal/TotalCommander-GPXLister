@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.8.1 - Reliable 3D hover synchronisation
+
+- Added direct track-point hovering in the 3D view: moving over a 3D track updates the marker and altitude/speed profile guide, and the active hover point stays synchronised when switching between 2D and 3D.
+- Fixed the 3D hover marker appearing only after a resize or camera drag; the mouse, marker, and altitude/speed profile guide are now aligned as soon as the 3D view opens.
+- Kept the 3D marker and altitude/speed profile guide synchronised when hovering a profile or using downsampled tracks.
+- Fixed stale or duplicate hover indicators after switching views or moving the pointer outside the 3D view.
+- Fixed 3D hover timestamps so they match the source GPX date and local time shown in 2D.
+- Kept the 3D marker fully visible across camera angles.
+- Prevented isolated terrain-tile download failures from unexpectedly closing an otherwise working 3D session.
+
 ## v2.8 - Optional perspective and real 3D terrain
 
 - Added an optional **3D view (D)** context-menu action and `D` shortcut while keeping flat 2D as the startup view; the numeric `3` key remains available to Total Commander for Lister mode switching.

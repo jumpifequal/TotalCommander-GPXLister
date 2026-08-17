@@ -116,11 +116,11 @@ EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
 
 - **Elevation Profile:** Synchronised hover line showing elevation at specific points along the track.
 
-- **3D overlays:** Track name and summary stay at top-left; hovering a track point adds coordinates, elevation, speed, and local time. Clicking the altitude/speed profile highlights the same position in the 3D map; double-click also focuses the camera.
+- **3D overlays:** Track name and summary stay at top-left; hovering a track point adds coordinates, elevation, speed, and the source GPX time converted to local time. Hovering or clicking the altitude/speed profile highlights the same position with a visible 3D point marker; double-click also focuses the camera. Pressing `D` immediately hands the active hover point to the incoming view, showing its marker and one matching profile guide without requiring camera movement. These are transient hover indicators: both follow the live point and disappear on mouse-out instead of returning to the transition point.
 
 ### Optional 3D view
 
-Files always open in the native flat 2D renderer. The `D` key or **3D view (D)** context-menu item starts the preferred renderer only when requested. Model `1` is a pitched perspective map without a terrain mesh. Model `2` is real terrain built from DEM tiles. Both models require the bundled `web` folder and the Microsoft Edge WebView2 Evergreen Runtime; the plugin needs no separate `WebView2Loader.dll`. If WebView2, local web assets, or the terrain provider fail, GPXLister closes the 3D renderer and returns to flat 2D with a diagnostic banner.
+Files always open in the native flat 2D renderer. The `D` key or **3D view (D)** context-menu item starts the preferred renderer only when requested. Model `1` is a pitched perspective map without a terrain mesh. Model `2` is real terrain built from DEM tiles. Both models require the bundled `web` folder and the Microsoft Edge WebView2 Evergreen Runtime; the plugin needs no separate `WebView2Loader.dll`. If WebView2, local web assets, or the terrain provider fail during startup, GPXLister closes the 3D renderer and returns to flat 2D with a diagnostic banner. An isolated terrain-tile failure after startup does not close an otherwise working 3D session.
 
 ### Slope-based track colouring
 
@@ -225,6 +225,13 @@ Unsupported or limited cases:
 - Largely coded via Gemini Pro.
 
 ## Versions
+
+- **v2.8.1 - Reliable 3D hover synchronisation**
+
+  - Made the 3D hover marker visible and correctly aligned immediately after entering 3D, without requiring a resize or camera drag.
+  - Kept the active point and altitude/speed profile guide synchronised across view switches, profile interaction, and downsampled tracks.
+  - Fixed stale or duplicate hover indicators, incorrect 3D timestamps, and marker fading at some camera angles.
+  - Prevented isolated terrain-tile failures from closing an active 3D session.
 
 - **v2.8 - Optional perspective and real 3D terrain**
 
