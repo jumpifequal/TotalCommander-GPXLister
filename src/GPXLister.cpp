@@ -2644,8 +2644,12 @@ static void OnPaint(State& s) {
         float mx = (float)(lon2x(hp->lon, s.zoom) - (s.cx - mapW / 2.0) + dipOffset);
         float my = (float)(lat2y(hp->lat, s.zoom) - (s.cy - centerY));
 
+        const float hoverRadius = s.opt.hoverCircleRadius;
+        const D2D1_ELLIPSE hoverMarker = D2D1::Ellipse(D2D1::Point2F(mx, my), hoverRadius, hoverRadius);
+        s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::White, 0.5f));
+        s.rt->FillEllipse(hoverMarker, s.brush);
         s.brush->SetColor(D2D1::ColorF(D2D1::ColorF::Red));
-        s.rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mx, my), 6.0f, 6.0f), s.brush, 2.0f);
+        s.rt->DrawEllipse(hoverMarker, s.brush, 2.0f);
 
         // Profile vertical line should be shown when the mouse is over the track on the map.
         if (IsProfileVisible(s) && !IsPointInElevationProfile(s, dipMouse)) {
@@ -3313,7 +3317,7 @@ static std::wstring EffectiveTerrainEndpoint(const Options& options) {
     return endpoint;
 }
 
-static std::wstring BuildTerrain3DPayload(const State& s) {
+static std::wstring BuildTerrain3DPayload(const State& s, bool preserveViewport = false) {
 #ifdef _WIN64
     constexpr size_t totalPointBudget = 24000;
 #else
@@ -3338,8 +3342,10 @@ static std::wstring BuildTerrain3DPayload(const State& s) {
          << L",\"attribution\":\"" << JsonEscape(s.cache ? s.cache->Attribution() : L"") << L"\""
          << L",\"exaggeration\":" << s.opt.terrainExaggeration
          << L",\"lineWidth\":" << s.trackLineWidth
+         << L",\"hoverRadius\":" << s.opt.hoverCircleRadius
          << L",\"slopeEnabled\":" << (s.showSlopeColouringOnTrack ? L"true" : L"false")
          << L",\"tilesEnabled\":" << (s.tiles ? L"true" : L"false")
+         << L",\"preserveViewport\":" << (preserveViewport ? L"true" : L"false")
          << L",\"selectedTrack\":" << s.selectedTrack
          << L",\"summary\":\"" << JsonEscape(OverallOverlaySummary(s)) << L"\""
          << L",\"center\":[" << centerLon << L"," << centerLat << L"]"
@@ -3448,7 +3454,7 @@ static void Activate3DView(State& s) {
     }
     s.terrain3dActive = true;
     s.terrain3dLoading = true;
-    s.terrain3d->Activate(BuildTerrain3DPayload(s));
+    s.terrain3d->Activate(BuildTerrain3DPayload(s, true));
     Update3DLayout(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }

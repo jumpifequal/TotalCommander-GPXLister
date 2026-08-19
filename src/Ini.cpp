@@ -139,6 +139,7 @@ void LoadOptions(Options& o){
     ReadBool(iniPath, L"showSpeedProfile", o.showSpeedProfile, o.showSpeedProfile);
     ReadBool(iniPath, L"showSlopeColouringOnTrack", o.showSlopeColouringOnTrack, o.showSlopeColouringOnTrack);
     ReadFloat(iniPath, L"trackLineWidth", o.trackLineWidth, o.trackLineWidth);
+    ReadClampedFloat(iniPath, L"hoverCircleRadius", o.hoverCircleRadius, 2.0f, 30.0f, o.hoverCircleRadius);
     ReadStr(iniPath, L"speedProfileColor", o.speedProfileColor, o.speedProfileColor, 16);
     ReadStr(iniPath, L"fitConverter", o.fitConverter, o.fitConverter, MAX_PATH);
     ReadStr(iniPath, L"fitArgs", o.fitArgs, o.fitArgs, 512);

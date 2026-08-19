@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.8.2 - Minor ahestetic adjustments
+
+* Added: new ini setting for hovering circle radius in logic pixels (DPI adapted) `hoverCircleRadius`, default value to 6.0. Valid range 2.0 - 30.0
+* Fixed: red 2 px outline with 50% transparent white fill.
+- Fixed: existing 2D size retained: 6 logical-pixel radius.
+- Fixed: 3D now uses matching 6/2 CSS-pixel dimensions; CSS pixels and Direct2D DIPs scale with monitor DPI.
+* Fixed: current 2D map center and zoom are now preserved when entering 3D.
+* Fixed: terrain camera finalization remains active to avoid regressing hover alignment.
+
 ## v2.8.1 - Reliable 3D hover synchronisation
 
 - Added direct track-point hovering in the 3D view: moving over a 3D track updates the marker and altitude/speed profile guide, and the active hover point stays synchronised when switching between 2D and 3D.
@@ -22,7 +31,6 @@
 - Fixed 3D shortcut routing (including `T`/`Shift+T`) and added reliable `Ctrl`/`Shift`+left-drag rotation and pitch.
 - Fixed black patches caused by overlapping invisible hover targets on dense 3D tracks.
 - Added bounded 3D tile/worker caches and release of the 3D renderer when returning to 2D.
-
 
 ## v2.7.1 - Reverse map style cycling
 

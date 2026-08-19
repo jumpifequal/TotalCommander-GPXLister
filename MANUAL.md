@@ -136,41 +136,42 @@ GPXLister can render the track polyline with progressive colouring driven by the
 
 ## 5) INI Configuration (`GPXLister.ini`)
 
-  | Key                         | Type   | Default                                                 | Description                                                                                                    |
-  | --------------------------- | ------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-  | `useTiles`                  | bool   | `1`                                                     | Enable map tile background.                                                                                    |
-  | `showGridWhenNoTiles`       | bool   | `1`                                                     | Draw grid lines when tiles are unavailable.                                                                    |
-  | `showScale`                 | bool   | `1`                                                     | Show the dynamic scale bar.                                                                                    |
-  | `showCoords`                | bool   | `1`                                                     | Show latitude, longitude, and track name.                                                                      |
-  | `initialZoom`               | int    | `13`                                                    | Default zoom level (3..19).                                                                                    |
-  | `showElevationProfile`      | int    | `1`                                                     | Default visibility of the elevation window.                                                                    |
-  | `showSpeedProfile`          | int    | `0`                                                     | Default visibility of the speed profile. Runtime changes made with V or the context menu are saved here.       |
-  | `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                             |
-  | `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                             |
-  | `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                               |
-  | `3d_model`                  | int    | `2`                                                     | Preferred 3D renderer: `1` perspective, `2` real DEM terrain. Missing/invalid values are written as `2`.       |
-  | `terrainProvider`           | string | `terrarium`                                             | Real-terrain provider: `terrarium` or `maptiler`.                                                              |
-  | `terrariumTerrainEndpoint`  | string | AWS Terrarium URL                                       | Free Terrarium XYZ elevation tiles; no API key required.                                                       |
-  | `mapTilerTerrainEndpoint`   | string | MapTiler Terrain RGB TileJSON                           | MapTiler terrain URL; `{key}` is replaced by `mapTilerApiKey`.                                                |
-  | `mapTilerApiKey`            | string | empty                                                   | API key required for the default MapTiler terrain endpoint.                                                    |
-  | `terrainExaggeration`       | float  | `1.0`                                                   | Vertical terrain scale, clamped to `0.1` through `5.0`.                                                        |
-  | `fitConverter`              | string | `Fit2Gpx.exe`                                           | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`.             |
-  | `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
-  | `fitTimeoutSec`             | int    | `60`                                                    | Maximum FIT conversion time before the converter is terminated and an error is shown.                          |
-  | `kmlConverter`              | string | `kml2gpx.exe`                                           | Converter executable for `.kml` and `.kmz` files. Relative names search the plugin folder first, then `PATH`.  |
-  | `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                              |
-  | `kmlTimeoutSec`             | int    | `60`                                                    | Maximum KML/KMZ conversion time before the converter is terminated and an error is shown.                      |
-  | `mapTypeOrder`              | string | `standard,satellite,topo`                               | Startup, forward/backward keyboard-cycle, and context-menu order for map styles. Valid values: `standard`, `satellite`, `topo`. |
-  | `standardTileEndpoint`      | string | `OSM URL`                                               | URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.                  |
-  | `satelliteTileEndpoint`     | string | `Google Sat`                                            | URL template for the satellite map style.                                                                      |
-  | `topoTileEndpoint`          | string | `OpenTopoMap URL`                                       | URL template for the topo map style.                                                                           |
-  | `userAgent`                 | string | `GPXLister`                                             | HTTP User-Agent for requests.                                                                                  |
-  | `workers`                   | int    | `4`                                                     | Concurrent download threads (1..8).                                                                            |
-  | `requestDelayMs`            | int    | `75`                                                    | Base inter-request delay (throttling).                                                                         |
-  | `backoffStartMs`            | int    | `500`                                                   | Initial exponential backoff after network errors.                                                              |
-  | `backoffMaxMs`              | int    | `4000`                                                  | Maximum backoff delay for retries.                                                                             |
-  | `prefetchRings`             | int    | `2`                                                     | Number of tile rings to pre-load around the view.                                                              |
-  | `maxBitmaps`                | int    | `512`                                                   | LRU capacity for in-memory bitmaps.                                                                            |
+| Key                         | Type   | Default                                                 | Description                                                                                                                     |
+| --------------------------- | ------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `useTiles`                  | bool   | `1`                                                     | Enable map tile background.                                                                                                     |
+| `showGridWhenNoTiles`       | bool   | `1`                                                     | Draw grid lines when tiles are unavailable.                                                                                     |
+| `showScale`                 | bool   | `1`                                                     | Show the dynamic scale bar.                                                                                                     |
+| `showCoords`                | bool   | `1`                                                     | Show latitude, longitude, and track name.                                                                                       |
+| `initialZoom`               | int    | `13`                                                    | Default zoom level (3..19).                                                                                                     |
+| `showElevationProfile`      | int    | `1`                                                     | Default visibility of the elevation window.                                                                                     |
+| `showSpeedProfile`          | int    | `0`                                                     | Default visibility of the speed profile. Runtime changes made with V or the context menu are saved here.                        |
+| `showSlopeColouringOnTrack` | int    | `0`                                                     | Default visibility of slope-based progressive colouring on the map track polyline.                                              |
+| `trackLineWidth`            | float  | `2.0`                                                   | Stroke width used to draw the track polyline on the map (clamped to a safe range).                                              |
+| `hoverCircleRadius`         | float  | `6.0`                                                   | DPI-aware logical radius shared by the 2D and 3D hover marker, clamped to `2.0` through `30.0`.                                 |
+| `speedProfileColor`         | string | `#0059F2`                                               | Speed profile colour as `#RRGGBB`. Invalid values fall back to the default blue.                                                |
+| `3d_model`                  | int    | `2`                                                     | Preferred 3D renderer: `1` perspective, `2` real DEM terrain. Missing/invalid values are written as `2`.                        |
+| `terrainProvider`           | string | `terrarium`                                             | Real-terrain provider: `terrarium` or `maptiler`.                                                                               |
+| `terrariumTerrainEndpoint`  | string | AWS Terrarium URL                                       | Free Terrarium XYZ elevation tiles; no API key required.                                                                        |
+| `mapTilerTerrainEndpoint`   | string | MapTiler Terrain RGB TileJSON                           | MapTiler terrain URL; `{key}` is replaced by `mapTilerApiKey`.                                                                  |
+| `mapTilerApiKey`            | string | empty                                                   | API key required for the default MapTiler terrain endpoint.                                                                     |
+| `terrainExaggeration`       | float  | `1.0`                                                   | Vertical terrain scale, clamped to `0.1` through `5.0`.                                                                         |
+| `fitConverter`              | string | `Fit2Gpx.exe`                                           | Converter executable for `.fit` files. Relative names search the plugin folder first, then `PATH`.                              |
+| `fitArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | Fit2Gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                                               |
+| `fitTimeoutSec`             | int    | `60`                                                    | Maximum FIT conversion time before the converter is terminated and an error is shown.                                           |
+| `kmlConverter`              | string | `kml2gpx.exe`                                           | Converter executable for `.kml` and `.kmz` files. Relative names search the plugin folder first, then `PATH`.                   |
+| `kmlArgs`                   | string | `{input} {output} --elevation-dataset srtm30m,eudem25m` | kml2gpx command-line template. Supports `{converter}`, `{input}`, and `{output}`.                                               |
+| `kmlTimeoutSec`             | int    | `60`                                                    | Maximum KML/KMZ conversion time before the converter is terminated and an error is shown.                                       |
+| `mapTypeOrder`              | string | `standard,satellite,topo`                               | Startup, forward/backward keyboard-cycle, and context-menu order for map styles. Valid values: `standard`, `satellite`, `topo`. |
+| `standardTileEndpoint`      | string | `OSM URL`                                               | URL template for the standard map style. Legacy `tileEndpoint` is still accepted as an alias.                                   |
+| `satelliteTileEndpoint`     | string | `Google Sat`                                            | URL template for the satellite map style.                                                                                       |
+| `topoTileEndpoint`          | string | `OpenTopoMap URL`                                       | URL template for the topo map style.                                                                                            |
+| `userAgent`                 | string | `GPXLister`                                             | HTTP User-Agent for requests.                                                                                                   |
+| `workers`                   | int    | `4`                                                     | Concurrent download threads (1..8).                                                                                             |
+| `requestDelayMs`            | int    | `75`                                                    | Base inter-request delay (throttling).                                                                                          |
+| `backoffStartMs`            | int    | `500`                                                   | Initial exponential backoff after network errors.                                                                               |
+| `backoffMaxMs`              | int    | `4000`                                                  | Maximum backoff delay for retries.                                                                                              |
+| `prefetchRings`             | int    | `2`                                                     | Number of tile rings to pre-load around the view.                                                                               |
+| `maxBitmaps`                | int    | `512`                                                   | LRU capacity for in-memory bitmaps.                                                                                             |
 
 ## 6) Supported Map Tile Providers
 
@@ -226,26 +227,31 @@ Unsupported or limited cases:
 
 ## Versions
 
+* **v2.8.2 - Minor ahestetic adjustments**
+  
+  - New ini setting for hovering circle radius in logic pixels (DPI adapted) `hoverCircleRadius`, default value to 6.0. Valid range 2.0 - 30.0
+  - Hovering circle is now DPI-aware
+  - Current 2D map center and zoom are now preserved when entering 3D.
 - **v2.8.1 - Reliable 3D hover synchronisation**
-
+  
   - Made the 3D hover marker visible and correctly aligned immediately after entering 3D, without requiring a resize or camera drag.
   - Kept the active point and altitude/speed profile guide synchronised across view switches, profile interaction, and downsampled tracks.
   - Fixed stale or duplicate hover indicators, incorrect 3D timestamps, and marker fading at some camera angles.
   - Prevented isolated terrain-tile failures from closing an active 3D session.
 
 - **v2.8 - Optional perspective and real 3D terrain**
-
+  
   - Added on-demand 3D via `D` and the map context menu while preserving flat 2D startup.
   - Added perspective and real DEM terrain modes with Terrarium default and MapTiler API-key support.
   - Kept overlays, track filtering, profiles, point selection, slope colouring, and keyboard/mouse navigation synchronised in 3D.
   - Added bounded memory caches, deterministic renderer release, and safe fallback to 2D.
 
 - **v2.7.1 - Reverse map style cycling**
-
+  
   - Added **Shift+T** to cycle backward through configured map styles for quick side-by-side comparisons such as Standard vs Topo.
 
 - **v2.7 - Configurable map styles**
-
+  
   - Added `mapTypeOrder` to control startup map style, keyboard cycle order, and context-menu order.
   - Added standard, satellite, and topo map style slots with `standardTileEndpoint`, `satelliteTileEndpoint`, and `topoTileEndpoint`.
   - Replaced the old context-menu tile-server toggle with a **Map style** submenu for direct style selection.
@@ -253,26 +259,26 @@ Unsupported or limited cases:
   - Added safe repair for invalid or duplicate `mapTypeOrder` values, while preserving legacy `tileEndpoint` compatibility.
 
 - **v2.6 - Clipboard copy and persistent speed profile**
-
+  
   - Added **Ctrl+C / Ctrl+Ins / Copy view to clipboard** for the current visible Lister view.
   - Added the same copy action to the map right-click context menu.
   - Persisted **V / speed profile** visibility in `showSpeedProfile`.
 
 - **v2.5.1 - Reliable Fit to Window shortcut**
-
+  
   - Fixed unreliable **F / Fit to window** activation in Total Commander by handling its WLX host command path.
   - Preserved matching behavior for the map keyboard shortcut and contextual-menu action.
 
 - **v2.5 - KMZ import support and recompile via VS 2026**
-
+  
   * Added transparent `.kmz` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
-
+  
   * Recompilation via stable VS 2026 to avoid false VirusTotal positive warnings
 * **v2.4 - KML import support**
-
+  
   - Added transparent `.kml` support through hidden `kml2gpx.exe` conversion, with template-based `kmlArgs` and temporary GPX cleanup.
 - **v2.3 - GPX viewing polish**
-
+  
   - Changed **Fit to Window** to the standard **F** shortcut and removed the old X shortcut.
   - Redesigned the **I** information dialog with a DPI-aware card layout and clearer spacing.
   - Fixed summary elapsed time and average speed for patched/multi-track files with large timestamp gaps.

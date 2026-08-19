@@ -158,6 +158,7 @@
     <ClInclude Include="src\GPXParser.h" />
     <ClInclude Include="src\listplug.h" />
     <ClInclude Include="src\Mercator.h" />
+    <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\SlopeColouring.h" />
     <ClInclude Include="src\TileCache.h" />
     <ClInclude Include="src\Ini.h" />
@@ -179,6 +180,9 @@
     <None Include="README.md" />
     <None Include="web\terrain3d.html" />
     <None Include="third_party\maplibre-gl\LICENSE.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\resource.rc" />
   </ItemGroup>
   <Target Name="CopyTerrain3DAssets" AfterTargets="Build">
     <ItemGroup>

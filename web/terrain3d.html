@@ -220,9 +220,10 @@
       map.addLayer({
         id: 'gpx-highlight-layer', type: 'circle', source: 'gpx-highlight',
         paint: {
-          'circle-radius': 7, 'circle-color': '#fff',
-          'circle-stroke-color': '#e11d35', 'circle-stroke-width': 3,
-          'circle-opacity': ['get', 'opacity'],
+          // CSS pixels, like the 2D renderer's DIPs, remain the same logical size across monitor DPIs.
+          'circle-radius': payload.hoverRadius, 'circle-color': '#fff',
+          'circle-stroke-color': '#f00', 'circle-stroke-width': 2,
+          'circle-opacity': ['*', ['get', 'opacity'], 0.5],
           'circle-stroke-opacity': ['get', 'opacity']
         }
       });
@@ -387,6 +388,19 @@
       }
     }
 
+    function applyInitialViewport() {
+      if (!map || !payload) return;
+      if (!payload.preserveViewport) {
+        fitTrack();
+        return;
+      }
+      map.easeTo({
+        center: payload.center,
+        zoom: payload.zoom,
+        duration: 0,
+        freezeElevation: payload.model === 2
+      });
+    }
     function buildMap(configuration) {
       disposeMap();
       payload = configuration;
@@ -451,7 +465,7 @@
               initialLoadComplete = true;
               post('ready');
             });
-            fitTrack();
+            applyInitialViewport();
           });
         } catch (error) {
           post(`error|${String(error && error.message ? error.message : error).substring(0, 300)}`);

@@ -7,7 +7,7 @@ file=GPXLister.wlx
 defaultdir=GPXLister
 defaultextension=gpx;fit;kml;kmz
 defaultfilter=EXT="GPX" | EXT="FIT" | EXT="KML" | EXT="KMZ"
-version=2.8.1
+version=2.8.2
 author=jumpifequal
 homepage=https://github.com/jumpifequal/TotalCommander-GPXLister
 notes=Requires Windows 10+. Keep the web folder beside the plugin for 3D and converters beside it for FIT,KML,KMZ support
